@@ -1,3 +1,14 @@
+## The primary function to use here is Install-MachineBadge. For example:
+##
+## Import-Module .\MachineBadge.psm1
+## Install-MachineBadge -Context Corp
+##
+## This will install the MachineBadge to run at logon, with a blue top half (Corp)
+## and a machine-specific color bottom half. You can specify the color like -MachineColor ff0000
+## When you do not specify -MachineColor, a color is derived from the hostname.
+##
+## By default Install-MachineBadge will also launch the badge immediately so you can see it without logging off.
+## To skip the immediate launch, use -InstallOnly. 
 
 Set-StrictMode -Version Latest
 
