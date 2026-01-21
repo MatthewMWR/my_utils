@@ -8,7 +8,7 @@ function Start-MachineBadge {
         [ValidateSet('Corp','Personal')]
         [string]$Context,
         
-        [Parameter()]
+        [Parameter(Mandatory)]
         [string]$MachineColor
     )
 
@@ -31,14 +31,7 @@ public static class Win32 {
 }
 "@ -ErrorAction SilentlyContinue
 
-    function Get-StableColorFromString {
-        param([string]$s)
-        $h = [Math]::Abs($s.GetHashCode())
-        $r = ($h           % 156) + 50
-        $g = (($h / 256)   % 156) + 50
-        $b = (($h / 65536) % 156) + 50
-        [System.Drawing.Color]::FromArgb(255, $r, $g, $b)
-    }
+    
 
     function Get-GlyphFirstLastAlnum {
         param([string]$name)
@@ -89,16 +82,12 @@ public static class Win32 {
 
     $hostname = $env:COMPUTERNAME
 
-    # Parse machine color from hex string or default to hash-based color
-    if ($MachineColor) {
-        $hexColor = $MachineColor -replace '^#', ''
-        $r = [Convert]::ToInt32($hexColor.Substring(0,2), 16)
-        $g = [Convert]::ToInt32($hexColor.Substring(2,2), 16)
-        $b = [Convert]::ToInt32($hexColor.Substring(4,2), 16)
-        $machineColorObj = [System.Drawing.Color]::FromArgb(255, $r, $g, $b)
-    } else {
-        $machineColorObj = Get-StableColorFromString $hostname
-    }
+    # Parse machine color from hex string (required)
+    $hexColor = $MachineColor -replace '^#', ''
+    $r = [Convert]::ToInt32($hexColor.Substring(0,2), 16)
+    $g = [Convert]::ToInt32($hexColor.Substring(2,2), 16)
+    $b = [Convert]::ToInt32($hexColor.Substring(4,2), 16)
+    $machineColorObj = [System.Drawing.Color]::FromArgb(255, $r, $g, $b)
 
     # Keep tooltip short (NotifyIcon.Text limit varies by runtime; safe to keep compact) 【2-0a3195】
     $sessionHint = if ($env:SESSIONNAME -like 'RDP-*') { 'R' } else { 'L' }
@@ -152,20 +141,22 @@ function Install-MachineBadge {
     if (-not $MachineColor) {
         $hostname = $env:COMPUTERNAME
         $h = [Math]::Abs($hostname.GetHashCode())
-        $r = ($h           % 156) + 50
-        $g = (($h / 256)   % 156) + 50
-        $b = (($h / 65536) % 156) + 50
-        $MachineColor = "#{0:X2}{1:X2}{2:X2}" -f $r,$g,$b
+        # Ensure integer math for PS 5.1 composite formatting (X2 requires integral types)
+        $r = ([int]($h % 156)) + 50
+        $g = ([int](([int]($h / 256))   % 156)) + 50
+        $b = ([int](([int]($h / 65536)) % 156)) + 50
+        $MachineColor = ('#{0:X2}{1:X2}{2:X2}' -f $r,$g,$b)
     }
 
     # Create a VBScript wrapper to launch PowerShell truly hidden
     # -WindowStyle Hidden is unreliable at logon; VBScript's Run(cmd, 0) is bulletproof
-    # Embed PowerShell commands directly to avoid extra .ps1 file
+    # Embed PowerShell commands directly and use -EncodedCommand for robust quoting in PS 5.1
     $vbsPath = Join-Path $installDir "MachineBadge.vbs"
     $psCmd = "`$ErrorActionPreference = 'SilentlyContinue'; Import-Module '$moduleDest' -Force; Start-MachineBadge -Context $Context -MachineColor '$MachineColor'"
+    $psEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($psCmd))
     @"
 Set objShell = CreateObject("WScript.Shell")
-powershellCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"$psCmd`""
+powershellCmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -EncodedCommand $psEncoded"
 objShell.Run powershellCmd, 0, False
 "@ | Set-Content -Path $vbsPath -Encoding ASCII
 
