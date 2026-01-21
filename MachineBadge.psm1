@@ -3,9 +3,9 @@
 ## Import-Module .\MachineBadge.psm1
 ## Install-MachineBadge -Context Corp
 ##
-## This will install the MachineBadge to run at logon, with a blue top half (Corp)
-## and a machine-specific color bottom half. You can specify the color like -MachineColor ff0000
-## When you do not specify -MachineColor, a color is derived from the hostname.
+## This will install the MachineBadge to run at logon, with a blue top half (Corp context)
+## and a machine-specific color bottom half. You can optionally specify the machine specific
+## color like -MachineColor ff0000. By default, a color is automatically derived from the hostname.
 ##
 ## By default Install-MachineBadge will also launch the badge immediately so you can see it without logging off.
 ## To skip the immediate launch, use -InstallOnly. 
@@ -22,12 +22,6 @@ function Start-MachineBadge {
         [Parameter(Mandatory)]
         [string]$MachineColor
     )
-
-    # Single-instance guard (prevents duplicates if user launches manually + Run key)
-    $mutexName = "Global\MachineBadgeTray"
-    $createdNew = $false
-    $mutex = New-Object System.Threading.Mutex($true, $mutexName, [ref]$createdNew)
-    if (-not $createdNew) { return }
 
     Add-Type -AssemblyName System.Windows.Forms
     Add-Type -AssemblyName System.Drawing
@@ -120,9 +114,6 @@ public static class Win32 {
 
     $ctx = New-Object System.Windows.Forms.ApplicationContext
     [System.Windows.Forms.Application]::Run($ctx)
-
-    $mutex.ReleaseMutex() | Out-Null
-    $mutex.Dispose()
 }
 
 function Install-MachineBadge {
