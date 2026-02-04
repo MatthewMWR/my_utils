@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+## Assumes Azure CLI is installed and you are logged in
+## vm creation will prompt for a password for the local admin account 
+
 ## Parameters to customize, from most to least likely you wouldn't want to keep the defaults
 loc="westus2"
 machineAdminUserName="azureuser"
