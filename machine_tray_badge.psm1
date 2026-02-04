@@ -1,6 +1,6 @@
 ## The primary function to use here is Install-MachineBadge. For example:
 ##
-## Import-Module .\MachineBadge.psm1
+## Import-Module .\machine_tray_badge.psm1
 ## Install-MachineBadge -Context Corp
 ##
 ## This will install the MachineBadge to run at logon, with a blue top half (Corp context)
