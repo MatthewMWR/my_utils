@@ -4,3 +4,6 @@ Install-Module -Name PowerShellGet,Microsoft.PowerShell.PSResourceGet -Force -Al
 
 #Install-PSResource -Name Microsoft.OSConfig -Version 1.3.2-preview7 -Prerelease
 
+# Install pwsh7 from powershell 5
+Invoke-WebRequest -Uri https://github.com/PowerShell/PowerShell/releases/download/v7.5.4/PowerShell-7.5.4-win-x64.msi -OutFile pwsh.msi
+msiexec.exe /package pwsh.msi REGISTER_MANIFEST=1 ADD_PATH=1
