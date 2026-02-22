@@ -1,0 +1,333 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "title": "Connection Quality (0–100)",
+      "type": "timeseries",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "Quality",
+            "axisPlacement": "left",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "gradientMode": "none",
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": { "type": "linear" },
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100,
+          "unit": "none"
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "hotspot_lte_quality" },
+            "properties": [
+              { "id": "displayName", "value": "LTE Quality" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#4aa3ff" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "hotspot_nr_quality" },
+            "properties": [
+              { "id": "displayName", "value": "5G Quality" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "#ff5db1" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "hotspot_lte_quality",
+          "legendFormat": "{{__name__}}",
+          "refId": "A"
+        },
+        {
+          "expr": "hotspot_nr_quality",
+          "legendFormat": "{{__name__}}",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Service Type",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "#2ecc71", "value": null }] },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "hotspot_service_type_info",
+          "legendFormat": "{{type}}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" },
+        "textMode": "name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Radio Band",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "#3498db", "value": null }] },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "hotspot_radio_band_info",
+          "legendFormat": "{{band}}",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" },
+        "textMode": "name",
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "Scrape Health",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#e74c3c", "value": null },
+              { "color": "#2ecc71", "value": 1 }
+            ]
+          },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "FAIL", "color": "#e74c3c" }, "1": { "text": "OK", "color": "#2ecc71" } } }
+          ]
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "hotspot_scrape_success",
+          "refId": "A",
+          "instant": true
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" },
+        "colorMode": "background",
+        "graphMode": "none"
+      },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "LTE RSRP (dBm)",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "min": -140,
+          "max": -60,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#e74c3c", "value": null },
+              { "color": "#f1c40f", "value": -105 },
+              { "color": "#2ecc71", "value": -90 }
+            ]
+          },
+          "unit": "dBm"
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "hotspot_lte_rsrp_dbm", "refId": "A", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "LTE RSRQ (dB)",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 4, "x": 4, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "min": -20,
+          "max": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#e74c3c", "value": null },
+              { "color": "#f1c40f", "value": -13 },
+              { "color": "#2ecc71", "value": -10 }
+            ]
+          },
+          "unit": "dB"
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "hotspot_lte_rsrq_db", "refId": "A", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "LTE SNR (dB)",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 4, "x": 8, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "min": -10,
+          "max": 30,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#e74c3c", "value": null },
+              { "color": "#f1c40f", "value": 5 },
+              { "color": "#2ecc71", "value": 13 }
+            ]
+          },
+          "unit": "dB"
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "hotspot_lte_snr_db", "refId": "A", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "5G RSRP (dBm)",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "min": -140,
+          "max": -60,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#e74c3c", "value": null },
+              { "color": "#f1c40f", "value": -105 },
+              { "color": "#2ecc71", "value": -90 }
+            ]
+          },
+          "unit": "dBm"
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "hotspot_nr_rsrp_dbm", "refId": "A", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "5G RSRQ (dB)",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 4, "x": 16, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "min": -20,
+          "max": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#e74c3c", "value": null },
+              { "color": "#f1c40f", "value": -13 },
+              { "color": "#2ecc71", "value": -10 }
+            ]
+          },
+          "unit": "dB"
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "hotspot_nr_rsrq_db", "refId": "A", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    },
+    {
+      "title": "5G SNR (dB)",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 4, "x": 20, "y": 14 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "min": -10,
+          "max": 30,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "#e74c3c", "value": null },
+              { "color": "#f1c40f", "value": 5 },
+              { "color": "#2ecc71", "value": 13 }
+            ]
+          },
+          "unit": "dB"
+        },
+        "overrides": []
+      },
+      "targets": [{ "expr": "hotspot_nr_snr_db", "refId": "A", "instant": true }],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" }
+    }
+  ],
+  "refresh": "15s",
+  "schemaVersion": 39,
+  "tags": ["hotspot", "cellular"],
+  "templating": {
+    "list": [
+      {
+        "current": { "selected": false, "text": "Prometheus", "value": "Prometheus" },
+        "hide": 2,
+        "includeAll": false,
+        "name": "DS_PROMETHEUS",
+        "query": "prometheus",
+        "type": "datasource"
+      }
+    ]
+  },
+  "time": { "from": "now-15m", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Hotspot Cellular Diagnostics",
+  "uid": "hotspot-cellular",
+  "version": 1
+}
