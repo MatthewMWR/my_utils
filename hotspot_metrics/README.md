@@ -165,7 +165,7 @@ For a persistent URL, create a free [Cloudflare](https://dash.cloudflare.com) ac
 
    ```sh
    CLOUDFLARE_TUNNEL_TOKEN=eyJh...your_token...
-   TUNNEL_CMD=tunnel --no-autoupdate run --token eyJh...your_token...
+   TUNNEL_CMD=tunnel --no-autoupdate run
    ```
 
 5. Restart the tunnel: `podman compose -f podman-compose.yml up -d tunnel`
