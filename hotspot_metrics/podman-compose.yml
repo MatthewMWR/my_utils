@@ -75,7 +75,9 @@ services:
     container_name: hotspot-tunnel
     networks:
       - metrics
-    command: tunnel --no-autoupdate --url http://dashboard:8080
+    command: ${TUNNEL_CMD:-tunnel --no-autoupdate --url http://dashboard:8080}
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN:-}
     depends_on:
       - dashboard
     restart: unless-stopped

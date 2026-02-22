@@ -107,6 +107,8 @@ All settings are controlled via environment variables (set in `.env`):
 | `SCRAPE_INTERVAL` | `15` | Seconds between scrapes |
 | `GRAFANA_USER` | `admin` | Grafana admin username |
 | `GRAFANA_PASSWORD` | `admin` | Grafana admin password |
+| `CLOUDFLARE_TUNNEL_TOKEN` | *(empty)* | Token for a named Cloudflare tunnel (stable URL) |
+| `TUNNEL_CMD` | `tunnel --no-autoupdate --url http://dashboard:8080` | Tunnel command override (set for named tunnels) |
 
 ## Dashboards
 
@@ -135,10 +137,35 @@ Designed for constrained browsers where Grafana's 10MB JS payload is too heavy (
 
 ## Cloudflare Tunnel
 
-The `tunnel` service exposes the lightweight dashboard via a public URL using [Cloudflare Quick Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/do-more-with-tunnels/trycloudflare/). No Cloudflare account is required.
+The `tunnel` service exposes the lightweight dashboard via a public URL. Two modes are supported:
 
-- The tunnel URL changes on each container restart
-- Check the current URL: `podman logs hotspot-tunnel 2>&1 | grep trycloudflare.com`
+### Quick Tunnel (default, no account)
+
+Works out of the box. The URL is random and changes on each restart.
+
+```sh
+# Check the current URL
+podman logs hotspot-tunnel 2>&1 | grep trycloudflare.com
+```
+
+### Named Tunnel (stable URL, free account)
+
+For a persistent URL, create a free [Cloudflare](https://dash.cloudflare.com) account:
+
+1. Go to **Zero Trust → Networks → Tunnels → Create a tunnel**
+2. Name it (e.g., `hotspot-metrics`) and copy the tunnel token
+3. Configure the tunnel's public hostname to point to `http://dashboard:8080`
+4. Add to your `.env`:
+
+   ```sh
+   CLOUDFLARE_TUNNEL_TOKEN=eyJh...your_token...
+   TUNNEL_CMD=tunnel --no-autoupdate run --token eyJh...your_token...
+   ```
+
+5. Restart the tunnel: `podman compose -f podman-compose.yml up -d tunnel`
+
+### Notes
+
 - All data collection remains local; only the dashboard viewing path traverses the tunnel
 - The tunnel auto-reconnects after network interruptions
 - When connectivity drops, the last-loaded dashboard state remains visible in the browser
