@@ -88,6 +88,12 @@ Scrapes LTE/5G signal metrics from the hotspot admin page and visualizes them vi
 podman compose -f podman-compose.yml down
 ```
 
+Data volumes (Prometheus history, Grafana settings) are preserved. To also stop the Podman VM:
+
+```sh
+podman machine stop
+```
+
 ### Rebuilding the scraper
 
 ```sh
