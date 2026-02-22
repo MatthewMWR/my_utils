@@ -1,6 +1,6 @@
-# All services use host networking so the scraper can reach the hotspot
-# on the LAN (192.168.1.1) and Prometheus/Grafana can reach each other
-# via localhost.
+# The scraper uses host networking to reach the hotspot on the LAN
+# (192.168.1.1). Prometheus and Grafana share a bridge network and
+# expose ports to 0.0.0.0 so other devices on the LAN can connect.
 #
 # Ports used: scraper :9100, prometheus :9090, grafana :3000
 
@@ -22,7 +22,12 @@ services:
   prometheus:
     image: docker.io/prom/prometheus:latest
     container_name: hotspot-prometheus
-    network_mode: host
+    networks:
+      - metrics
+    ports:
+      - "0.0.0.0:9090:9090"
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus_data:/prometheus
@@ -33,7 +38,10 @@ services:
   grafana:
     image: docker.io/grafana/grafana:latest
     container_name: hotspot-grafana
-    network_mode: host
+    networks:
+      - metrics
+    ports:
+      - "0.0.0.0:3000:3000"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -41,9 +49,39 @@ services:
     environment:
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
       - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/var/lib/grafana/dashboards/hotspot.json
     depends_on:
       - prometheus
     restart: unless-stopped
+
+  dashboard:
+    image: docker.io/library/nginx:alpine
+    container_name: hotspot-dashboard
+    networks:
+      - metrics
+    ports:
+      - "0.0.0.0:8080:8080"
+    volumes:
+      - ./dashboard/index.html:/usr/share/nginx/html/index.html:ro
+      - ./dashboard/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  tunnel:
+    image: docker.io/cloudflare/cloudflared:latest
+    container_name: hotspot-tunnel
+    networks:
+      - metrics
+    command: tunnel --no-autoupdate --url http://dashboard:8080
+    depends_on:
+      - dashboard
+    restart: unless-stopped
+
+networks:
+  metrics:
 
 volumes:
   prometheus_data:

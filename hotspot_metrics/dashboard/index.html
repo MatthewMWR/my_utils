@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hotspot Metrics</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0b0e13; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 12px; }
+  h1 { font-size: 16px; color: #888; text-align: center; margin-bottom: 8px; }
+  .status-bar { display: flex; justify-content: center; gap: 16px; margin-bottom: 10px; font-size: 14px; }
+  .status-bar .label { color: #888; }
+  .status-bar .value { font-weight: 600; }
+  .chart-container { width: 100%; height: 180px; background: #141619; border-radius: 6px; margin-bottom: 10px; position: relative; }
+  canvas { width: 100% !important; height: 100% !important; }
+  .gauges { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+  .gauge { background: #141619; border-radius: 6px; padding: 10px; text-align: center; }
+  .gauge .title { font-size: 10px; color: #888; text-transform: uppercase; margin-bottom: 4px; }
+  .gauge .val { font-size: 28px; font-weight: 700; }
+  .gauge .unit { font-size: 11px; color: #888; }
+  .section-label { font-size: 12px; color: #666; margin: 8px 0 4px 4px; }
+  .good { color: #73bf69; }
+  .warn { color: #ff9830; }
+  .bad { color: #f2495c; }
+  .na { color: #555; }
+  .quality-row { display: flex; gap: 6px; margin-bottom: 6px; }
+  .quality-box { flex: 1; background: #141619; border-radius: 6px; padding: 12px; text-align: center; }
+  .quality-box .val { font-size: 42px; font-weight: 700; }
+  .quality-box .title { font-size: 11px; color: #888; }
+  .stale-warning { display: none; text-align: center; color: #ff9830; font-size: 12px; margin-top: 4px; }
+</style>
+</head>
+<body>
+<h1>Hotspot Cellular Diagnostics</h1>
+<div class="status-bar">
+  <span><span class="label">Band </span><span class="value" id="band">—</span></span>
+  <span><span class="label">Service </span><span class="value" id="svc">—</span></span>
+  <span><span class="label">Scrape </span><span class="value" id="scrape-age">—</span></span>
+</div>
+
+<div class="quality-row">
+  <div class="quality-box">
+    <div class="title">LTE Quality</div>
+    <div class="val" id="lte-q">—</div>
+  </div>
+  <div class="quality-box">
+    <div class="title">5G Quality</div>
+    <div class="val" id="nr-q">—</div>
+  </div>
+</div>
+
+<div class="chart-container"><canvas id="chart"></canvas></div>
+
+<div class="section-label">LTE</div>
+<div class="gauges">
+  <div class="gauge"><div class="title">RSRP</div><div class="val" id="lte-rsrp">—</div><div class="unit">dBm</div></div>
+  <div class="gauge"><div class="title">RSRQ</div><div class="val" id="lte-rsrq">—</div><div class="unit">dB</div></div>
+  <div class="gauge"><div class="title">SNR</div><div class="val" id="lte-snr">—</div><div class="unit">dB</div></div>
+</div>
+<div class="section-label">5G NR</div>
+<div class="gauges">
+  <div class="gauge"><div class="title">RSRP</div><div class="val" id="nr-rsrp">—</div><div class="unit">dBm</div></div>
+  <div class="gauge"><div class="title">RSRQ</div><div class="val" id="nr-rsrq">—</div><div class="unit">dB</div></div>
+  <div class="gauge"><div class="title">SNR</div><div class="val" id="nr-snr">—</div><div class="unit">dB</div></div>
+</div>
+<div class="stale-warning" id="stale">⚠ Data may be stale — last update <span id="stale-ago"></span></div>
+
+<script>
+var PROM = '';
+var REFRESH = 5000;
+var HISTORY = 30 * 60;
+
+function qualityColor(v) {
+  if (v == null) return 'na';
+  if (v >= 60) return 'good';
+  if (v >= 30) return 'warn';
+  return 'bad';
+}
+function rsrpColor(v) {
+  if (v == null) return 'na';
+  if (v >= -90) return 'good';
+  if (v >= -110) return 'warn';
+  return 'bad';
+}
+function rsrqColor(v) {
+  if (v == null) return 'na';
+  if (v >= -10) return 'good';
+  if (v >= -15) return 'warn';
+  return 'bad';
+}
+function snrColor(v) {
+  if (v == null) return 'na';
+  if (v >= 10) return 'good';
+  if (v >= 3) return 'warn';
+  return 'bad';
+}
+
+function setVal(id, val, colorFn) {
+  var el = document.getElementById(id);
+  if (val == null || isNaN(val)) { el.textContent = 'n/a'; el.className = 'val na'; }
+  else { el.textContent = Math.round(val); el.className = 'val ' + colorFn(val); }
+}
+
+function promQuery(expr) {
+  return fetch(PROM + '/api/v1/query?query=' + encodeURIComponent(expr))
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.data.result.length === 0) return null;
+      return parseFloat(j.data.result[0].value[1]);
+    })
+    .catch(function() { return null; });
+}
+
+function promQueryRange(expr, start, end, step) {
+  return fetch(PROM + '/api/v1/query_range?query=' + encodeURIComponent(expr) + '&start=' + start + '&end=' + end + '&step=' + step)
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.data.result.length === 0) return [];
+      return j.data.result[0].values.map(function(p) { return { t: p[0] * 1000, v: parseFloat(p[1]) }; });
+    })
+    .catch(function() { return []; });
+}
+
+function promQueryInfo(expr) {
+  return fetch(PROM + '/api/v1/query?query=' + encodeURIComponent(expr))
+    .then(function(r) { return r.json(); })
+    .then(function(j) {
+      if (j.data.result.length === 0) return '';
+      var m = j.data.result[0].metric;
+      return m.type || m.band || '';
+    })
+    .catch(function() { return ''; });
+}
+
+var canvas = document.getElementById('chart');
+var ctx = canvas.getContext('2d');
+var lteHistory = [], nrHistory = [];
+
+function drawChart() {
+  var dpr = window.devicePixelRatio || 1;
+  var rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  var W = rect.width, H = rect.height;
+  var PAD = { top: 10, right: 10, bottom: 20, left: 35 };
+  var cw = W - PAD.left - PAD.right;
+  var ch = H - PAD.top - PAD.bottom;
+
+  ctx.clearRect(0, 0, W, H);
+
+  ctx.strokeStyle = '#222';
+  ctx.lineWidth = 1;
+  ctx.font = '10px sans-serif';
+  ctx.fillStyle = '#555';
+  for (var v = 0; v <= 100; v += 25) {
+    var y = PAD.top + ch - (v / 100) * ch;
+    ctx.beginPath(); ctx.moveTo(PAD.left, y); ctx.lineTo(W - PAD.right, y); ctx.stroke();
+    ctx.fillText(v, 4, y + 3);
+  }
+
+  if (lteHistory.length === 0 && nrHistory.length === 0) return;
+
+  var now = Date.now();
+  var tMin = now - HISTORY * 1000;
+  var tMax = now;
+
+  function drawLine(data, color) {
+    if (data.length < 2) return;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    var started = false;
+    for (var i = 0; i < data.length; i++) {
+      var x = PAD.left + ((data[i].t - tMin) / (tMax - tMin)) * cw;
+      var yv = Math.max(0, Math.min(100, data[i].v));
+      var py = PAD.top + ch - (yv / 100) * ch;
+      if (!started) { ctx.moveTo(x, py); started = true; }
+      else ctx.lineTo(x, py);
+    }
+    ctx.stroke();
+  }
+
+  drawLine(lteHistory, '#5794f2');
+  drawLine(nrHistory, '#e36ef2');
+
+  ctx.fillStyle = '#555';
+  ctx.font = '10px sans-serif';
+  for (var i = 0; i <= 6; i++) {
+    var t = new Date(tMin + (i / 6) * (tMax - tMin));
+    var lbl = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
+    var lx = PAD.left + (i / 6) * cw;
+    ctx.fillText(lbl, lx - 15, H - 4);
+  }
+
+  ctx.fillStyle = '#5794f2';
+  ctx.fillRect(PAD.left + 8, PAD.top + 4, 12, 3);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('LTE', PAD.left + 24, PAD.top + 10);
+  ctx.fillStyle = '#e36ef2';
+  ctx.fillRect(PAD.left + 52, PAD.top + 4, 12, 3);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('5G', PAD.left + 68, PAD.top + 10);
+}
+
+function refresh() {
+  Promise.all([
+    promQuery('hotspot_lte_quality'),
+    promQuery('hotspot_nr_quality'),
+    promQuery('hotspot_lte_rsrp_dbm'),
+    promQuery('hotspot_lte_rsrq_db'),
+    promQuery('hotspot_lte_snr_db'),
+    promQuery('hotspot_nr_rsrp_dbm'),
+    promQuery('hotspot_nr_rsrq_db'),
+    promQuery('hotspot_nr_snr_db'),
+    promQuery('hotspot_exporter_heartbeat_unixtime'),
+    promQueryInfo('hotspot_radio_band_info'),
+    promQueryInfo('hotspot_service_type_info'),
+  ]).then(function(vals) {
+    setVal('lte-q', vals[0], qualityColor);
+    setVal('nr-q', vals[1], qualityColor);
+    setVal('lte-rsrp', vals[2], rsrpColor);
+    setVal('lte-rsrq', vals[3], rsrqColor);
+    setVal('lte-snr', vals[4], snrColor);
+    setVal('nr-rsrp', vals[5], rsrpColor);
+    setVal('nr-rsrq', vals[6], rsrqColor);
+    setVal('nr-snr', vals[7], snrColor);
+
+    document.getElementById('band').textContent = vals[9] || '—';
+    document.getElementById('svc').textContent = vals[10] || '—';
+
+    if (vals[8]) {
+      var age = Math.round(Date.now() / 1000 - vals[8]);
+      var ageEl = document.getElementById('scrape-age');
+      ageEl.textContent = age < 10 ? 'live' : age + 's ago';
+      ageEl.className = 'value ' + (age < 30 ? 'good' : age < 120 ? 'warn' : 'bad');
+      var staleEl = document.getElementById('stale');
+      if (age > 60) { staleEl.style.display = 'block'; document.getElementById('stale-ago').textContent = age + 's ago'; }
+      else staleEl.style.display = 'none';
+    }
+
+    var now = Math.floor(Date.now() / 1000);
+    var start = now - HISTORY;
+    return Promise.all([
+      promQueryRange('hotspot_lte_quality', start, now, 15),
+      promQueryRange('hotspot_nr_quality', start, now, 15),
+    ]);
+  }).then(function(hist) {
+    lteHistory = hist[0];
+    nrHistory = hist[1];
+    drawChart();
+  });
+}
+
+refresh();
+setInterval(refresh, REFRESH);
+window.addEventListener('resize', drawChart);
+</script>
+</body>
+</html>

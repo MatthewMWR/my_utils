@@ -149,21 +149,15 @@ class HotspotScraper:
         self._page.goto(HOTSPOT_URL, wait_until="networkidle", timeout=30_000)
         time.sleep(2)  # let SPA hydrate
 
-        # Attempt form login — look for password field
+        # Attempt form login — use Netgear-specific IDs
         try:
             pw_input = self._page.wait_for_selector(
-                'input[type="password"]', timeout=10_000
+                '#session_password', timeout=10_000
             )
-            # Fill username if present
-            user_input = self._page.query_selector('input[type="text"], input[name="username"]')
-            if user_input:
-                user_input.fill(USERNAME)
             pw_input.fill(PASSWORD)
 
             # Click submit button
-            submit = self._page.query_selector(
-                'button[type="submit"], input[type="submit"], button:has-text("Sign In"), button:has-text("Login"), button:has-text("Log In")'
-            )
+            submit = self._page.query_selector('#login_submit')
             if submit:
                 submit.click()
             else:
@@ -185,7 +179,10 @@ class HotspotScraper:
 
     def _is_login_page(self) -> bool:
         """Detect if we've been redirected back to login."""
-        return self._page.query_selector('input[type="password"]') is not None
+        el = self._page.query_selector('#session_password')
+        if not el:
+            return False
+        return el.is_visible()
 
     def scrape(self) -> str | None:
         """Navigate to diagnostics and return page text, re-auth if needed."""
@@ -237,6 +234,23 @@ def run():
             text = scraper.scrape()
             if text:
                 data = parse_diagnostics(text)
+                # Detect stale session: page loads but yields no metrics
+                all_none = all(data[k] is None for k in (
+                    "lte_rsrp", "lte_rsrq", "lte_snr",
+                    "nr_rsrp", "nr_rsrq", "nr_snr",
+                ))
+                consecutive_empty = getattr(scraper, '_consecutive_empty', 0)
+                if all_none and not data["band"] and not data["service_type"]:
+                    consecutive_empty += 1
+                    scraper._consecutive_empty = consecutive_empty
+                    if consecutive_empty >= 5:
+                        log.warning("Stale session detected (%d empty scrapes), restarting browser…",
+                                    consecutive_empty)
+                        scraper.stop()
+                        scraper = None
+                        continue
+                else:
+                    scraper._consecutive_empty = 0
                 update_gauges(data)
             else:
                 SCRAPE_SUCCESS.set(0)
