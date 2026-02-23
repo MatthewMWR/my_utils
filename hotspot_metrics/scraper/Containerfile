@@ -14,5 +14,5 @@ RUN pip install --no-cache-dir -r requirements.txt && \
 
 COPY scraper.py .
 
-EXPOSE 9100
+EXPOSE 9100 9101
 ENTRYPOINT ["python", "-u", "scraper.py"]

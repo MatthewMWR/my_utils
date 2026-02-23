@@ -35,7 +35,9 @@
 <div class="status-bar">
   <span><span class="label">Band </span><span class="value" id="band">—</span></span>
   <span><span class="label">Service </span><span class="value" id="svc">—</span></span>
+  <span><span class="label">Source </span><span class="value" id="source">—</span></span>
   <span><span class="label">Scrape </span><span class="value" id="scrape-age">—</span></span>
+  <span><span class="label">Last data age </span><span class="value" id="latency">—</span></span>
 </div>
 
 <div class="quality-row">
@@ -67,8 +69,12 @@
 
 <script>
 var PROM = '';
-var REFRESH = 5000;
+var REFRESH = 3000;
 var HISTORY = 30 * 60;
+var HISTORY_POLL = 30000;
+var sseConnected = false;
+var lastHeartbeat = null;
+var lastScrapeTimestamp = null;
 
 function qualityColor(v) {
   if (v == null) return 'na';
@@ -99,6 +105,67 @@ function setVal(id, val, colorFn) {
   var el = document.getElementById(id);
   if (val == null || isNaN(val)) { el.textContent = 'n/a'; el.className = 'val na'; }
   else { el.textContent = Math.round(val); el.className = 'val ' + colorFn(val); }
+}
+
+function updateScrapeAge(heartbeatTs) {
+  if (heartbeatTs == null || isNaN(heartbeatTs)) return;
+  lastHeartbeat = heartbeatTs;
+  var age = Math.round(Date.now() / 1000 - heartbeatTs);
+  var ageEl = document.getElementById('scrape-age');
+  ageEl.textContent = age < 10 ? 'live' : age + 's ago';
+  ageEl.className = 'value ' + (age < 30 ? 'good' : age < 120 ? 'warn' : 'bad');
+  var staleEl = document.getElementById('stale');
+  if (age > 60) { staleEl.style.display = 'block'; document.getElementById('stale-ago').textContent = age + 's ago'; }
+  else staleEl.style.display = 'none';
+}
+
+function renderLatency() {
+  var el = document.getElementById('latency');
+  if (lastScrapeTimestamp == null || isNaN(lastScrapeTimestamp)) {
+    el.textContent = '—';
+    el.className = 'value na';
+    return;
+  }
+  var age = Date.now() / 1000 - lastScrapeTimestamp;
+  if (age < 0) age = 0;
+  el.textContent = age.toFixed(1) + 's';
+  el.className = 'value ' + (age < 3 ? 'good' : age < 12 ? 'warn' : 'bad');
+}
+
+function updateLatency(scrapeTs) {
+  if (scrapeTs == null || isNaN(scrapeTs)) return;
+  lastScrapeTimestamp = scrapeTs;
+  renderLatency();
+}
+
+function sourceCodeToState(code) {
+  var c = code == null || isNaN(code) ? -1 : Math.round(code);
+  if (c === 0) return { state: 'ok', label: 'OK', cls: 'good' };
+  if (c === 1) return { state: 'no_signal', label: 'No signal', cls: 'warn' };
+  if (c === 2) return { state: 'source_unavailable', label: 'Unavailable', cls: 'bad' };
+  if (c === 3) return { state: 'parse_warning', label: 'Parse warn', cls: 'warn' };
+  if (c === 4) return { state: 'scrape_error', label: 'Scrape error', cls: 'bad' };
+  if (c === 5) return { state: 'startup_error', label: 'Startup error', cls: 'bad' };
+  return { state: 'unknown', label: 'Unknown', cls: 'na' };
+}
+
+function setSourceStatus(state, message) {
+  var el = document.getElementById('source');
+  var mapped = sourceCodeToState(null);
+  if (state === 'ok') mapped = sourceCodeToState(0);
+  else if (state === 'no_signal') mapped = sourceCodeToState(1);
+  else if (state === 'source_unavailable') mapped = sourceCodeToState(2);
+  else if (state === 'parse_warning') mapped = sourceCodeToState(3);
+  else if (state === 'scrape_error') mapped = sourceCodeToState(4);
+  else if (state === 'startup_error') mapped = sourceCodeToState(5);
+  el.textContent = mapped.label;
+  el.className = 'value ' + mapped.cls;
+  el.title = message || '';
+}
+
+function setSourceStatusFromCode(code) {
+  var mapped = sourceCodeToState(code);
+  setSourceStatus(mapped.state, '');
 }
 
 function promQuery(expr) {
@@ -213,7 +280,8 @@ function refresh() {
     promQuery('hotspot_nr_rsrp_dbm'),
     promQuery('hotspot_nr_rsrq_db'),
     promQuery('hotspot_nr_snr_db'),
-    promQuery('hotspot_exporter_heartbeat_unixtime'),
+    promQuery('hotspot_source_state_code'),
+    promQuery('hotspot_last_scrape_unixtime'),
     promQueryInfo('hotspot_radio_band_info'),
     promQueryInfo('hotspot_service_type_info'),
   ]).then(function(vals) {
@@ -225,35 +293,81 @@ function refresh() {
     setVal('nr-rsrp', vals[5], rsrpColor);
     setVal('nr-rsrq', vals[6], rsrqColor);
     setVal('nr-snr', vals[7], snrColor);
+    setSourceStatusFromCode(vals[8]);
+    updateLatency(vals[9]);
 
-    document.getElementById('band').textContent = vals[9] || '—';
-    document.getElementById('svc').textContent = vals[10] || '—';
+    document.getElementById('band').textContent = vals[10] || '—';
+    document.getElementById('svc').textContent = vals[11] || '—';
+  });
+}
 
-    if (vals[8]) {
-      var age = Math.round(Date.now() / 1000 - vals[8]);
-      var ageEl = document.getElementById('scrape-age');
-      ageEl.textContent = age < 10 ? 'live' : age + 's ago';
-      ageEl.className = 'value ' + (age < 30 ? 'good' : age < 120 ? 'warn' : 'bad');
-      var staleEl = document.getElementById('stale');
-      if (age > 60) { staleEl.style.display = 'block'; document.getElementById('stale-ago').textContent = age + 's ago'; }
-      else staleEl.style.display = 'none';
-    }
+function applyLiveData(d) {
+  setVal('lte-q', d.lte_quality, qualityColor);
+  setVal('nr-q', d.nr_quality, qualityColor);
+  setVal('lte-rsrp', d.lte_rsrp, rsrpColor);
+  setVal('lte-rsrq', d.lte_rsrq, rsrqColor);
+  setVal('lte-snr', d.lte_snr, snrColor);
+  setVal('nr-rsrp', d.nr_rsrp, rsrpColor);
+  setVal('nr-rsrq', d.nr_rsrq, rsrqColor);
+  setVal('nr-snr', d.nr_snr, snrColor);
+  document.getElementById('band').textContent = d.band || '—';
+  document.getElementById('svc').textContent = d.service_type || '—';
+  setSourceStatus(d.source_state, d.source_message);
+  if (d.heartbeat_unixtime) updateScrapeAge(d.heartbeat_unixtime);
+  else if (d.timestamp) updateScrapeAge(d.timestamp);
+  updateLatency(d.scrape_unixtime || d.timestamp);
+  // Append to local history for chart
+  var now = Date.now();
+  if (d.lte_quality != null) lteHistory.push({ t: now, v: d.lte_quality });
+  if (d.nr_quality != null && d.nr_quality > 0) nrHistory.push({ t: now, v: d.nr_quality });
+  var cutoff = now - HISTORY * 1000;
+  lteHistory = lteHistory.filter(function(p) { return p.t >= cutoff; });
+  nrHistory = nrHistory.filter(function(p) { return p.t >= cutoff; });
+  drawChart();
+}
 
-    var now = Math.floor(Date.now() / 1000);
-    var start = now - HISTORY;
-    return Promise.all([
-      promQueryRange('hotspot_lte_quality', start, now, 15),
-      promQueryRange('hotspot_nr_quality', start, now, 15),
-    ]);
-  }).then(function(hist) {
+function connectSSE() {
+  var es = new EventSource('/events');
+  es.onopen = function() { sseConnected = true; };
+  es.onmessage = function(e) {
+    try { applyLiveData(JSON.parse(e.data)); } catch(err) {}
+  };
+  es.onerror = function() {
+    sseConnected = false;
+    es.close();
+    setTimeout(connectSSE, 5000);
+  };
+}
+
+function refreshHistory() {
+  var now = Math.floor(Date.now() / 1000);
+  var start = now - HISTORY;
+  Promise.all([
+    promQueryRange('hotspot_lte_quality', start, now, 5),
+    promQueryRange('hotspot_nr_quality', start, now, 5),
+  ]).then(function(hist) {
     lteHistory = hist[0];
     nrHistory = hist[1];
     drawChart();
   });
 }
 
+function refreshHeartbeat() {
+  promQuery('hotspot_exporter_heartbeat_unixtime').then(function(v) {
+    if (v != null) updateScrapeAge(v);
+  });
+}
+
+// Boot: load history from Prometheus, start SSE, fall back to polling
 refresh();
-setInterval(refresh, REFRESH);
+refreshHeartbeat();
+refreshHistory();
+setInterval(refreshHeartbeat, REFRESH);
+setInterval(refreshHistory, HISTORY_POLL);
+connectSSE();
+// Polling fallback when SSE is disconnected
+setInterval(function() { if (!sseConnected) refresh(); }, REFRESH);
+setInterval(renderLatency, 1000);
 window.addEventListener('resize', drawChart);
 </script>
 </body>

@@ -15,8 +15,9 @@ services:
       - HOTSPOT_URL=${HOTSPOT_URL:-http://192.168.1.1}
       - HOTSPOT_USERNAME=${HOTSPOT_USERNAME:-admin}
       - HOTSPOT_PASSWORD=${HOTSPOT_PASSWORD}
-      - SCRAPE_INTERVAL=${SCRAPE_INTERVAL:-15}
+      - SCRAPE_INTERVAL=${SCRAPE_INTERVAL:-5}
       - METRICS_PORT=9100
+      - SSE_PORT=9101
     restart: unless-stopped
 
   prometheus:
@@ -63,6 +64,8 @@ services:
       - metrics
     ports:
       - "0.0.0.0:8080:8080"
+    extra_hosts:
+      - "host.containers.internal:host-gateway"
     volumes:
       - ./dashboard/index.html:/usr/share/nginx/html/index.html:ro
       - ./dashboard/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro

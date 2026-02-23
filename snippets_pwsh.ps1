@@ -9,4 +9,5 @@ Invoke-WebRequest -Uri https://github.com/PowerShell/PowerShell/releases/downloa
 msiexec.exe /package pwsh.msi REGISTER_MANIFEST=1 ADD_PATH=1
 
 # function prompt with truncated path
-"PS …\" + ($executionContext.SessionState.Path.CurrentLocation.Path -split "\\")[-1]
+function prompt { '🅿 …\' + ($executionContext.SessionState.Path.CurrentLocation.Path -split '\\')[-1] + " >" }
+
