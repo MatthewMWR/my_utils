@@ -30,7 +30,6 @@ $runningContainers = @(podman ps --format "{{.Names}}" 2>$null)
 $required = @(
     "hotspot-scraper",
     "hotspot-prometheus",
-    "hotspot-grafana",
     "hotspot-dashboard",
     "hotspot-tunnel"
 )
@@ -40,6 +39,18 @@ if ($missing.Count -gt 0) {
     Fail "Required containers not running: $($missing -join ', ')"
 }
 Write-Ok "All required containers are running."
+
+$grafanaRunning = "hotspot-grafana" -in $runningContainers
+if ($grafanaRunning) {
+    $grafanaCode = curl.exe -s -m $TimeoutSeconds -o NUL -w "%{http_code}" http://localhost:3000/
+    if ($grafanaCode -eq "200" -or $grafanaCode -eq "302") {
+        Write-Ok "Grafana endpoint is reachable."
+    } else {
+        Write-Warn "Grafana container is running but endpoint returned HTTP $grafanaCode."
+    }
+} else {
+    Write-Warn "Grafana is in standby (not running by default). Enable with: podman compose -f podman-compose.yml --profile grafana up -d grafana"
+}
 
 $dashboardCode = curl.exe -s -m $TimeoutSeconds -o NUL -w "%{http_code}" http://localhost:8080/
 if ($dashboardCode -ne "200") {

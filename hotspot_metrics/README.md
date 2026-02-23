@@ -1,7 +1,7 @@
 # Hotspot Metrics
 
 Containerized monitoring stack for Netgear hotspot cellular diagnostics.
-Scrapes LTE/5G signal metrics from the hotspot admin page and visualizes them via a lightweight dashboard and Grafana.
+Scrapes LTE/5G signal metrics from the hotspot admin page and visualizes them via a lightweight dashboard and optional Grafana.
 
 ## Architecture
 
@@ -19,13 +19,15 @@ Scrapes LTE/5G signal metrics from the hotspot admin page and visualizes them vi
                                                           *.trycloudflare.com
 ```
 
+Grafana is in standby by default and can be enabled with the `grafana` profile.
+
 ### Services
 
 | Container | Purpose | Port |
 |-----------|---------|------|
 | **scraper** | Python + Playwright headless browser. Logs in once, then streams hotspot model updates from the diagnostics page (`/api/model.json`) and falls back to page polling if the stream stalls. Exposes Prometheus gauges and an SSE stream. | `:9100` metrics, `:9101` SSE (host network) |
 | **prometheus** | Scrapes the exporter every 5 seconds. | `:9090` |
-| **grafana** | Full-featured dashboard with pre-provisioned panels. Anonymous viewer access enabled. | `:3000` |
+| **grafana** | Full-featured dashboard with pre-provisioned panels. Anonymous viewer access enabled. **Disabled by default**; enable with `--profile grafana`. | `:3000` |
 | **dashboard** | Lightweight single-page HTML dashboard (~10KB) served via nginx, with Prometheus API proxy. Designed for constrained browsers (e.g., Tesla in-vehicle browser). | `:8080` |
 | **tunnel** | Cloudflare quick tunnel. Exposes the lightweight dashboard via a public `*.trycloudflare.com` URL. No account required. | — |
 
@@ -75,15 +77,20 @@ Scrapes LTE/5G signal metrics from the hotspot admin page and visualizes them vi
    # Edit .env with your hotspot admin password
    ```
 
-2. **Build and start the stack:**
+2. **Build and start the default stack (dashboard-first):**
 
    ```sh
    podman compose -f podman-compose.yml up -d --build
    ```
 
+   Optional: enable Grafana as well:
+
+   ```sh
+   podman compose -f podman-compose.yml --profile grafana up -d grafana
+   ```
+
 3. **Access the dashboards:**
 
-   - **Grafana** (full): [http://localhost:3000](http://localhost:3000) — anonymous viewer access enabled; log in with `admin` / `admin` (or your `.env` values) to edit.
    - **Lightweight dashboard**: [http://localhost:8080](http://localhost:8080) — single-page HTML, ideal for constrained browsers.
    - **Tunnel (remote access)**: Check the public URL with:
 
@@ -92,6 +99,7 @@ Scrapes LTE/5G signal metrics from the hotspot admin page and visualizes them vi
       ```
 
       The tunnel URL changes on each container restart. It provides access to the lightweight dashboard via a public `*.trycloudflare.com` URL — useful for devices that block private IP addresses (e.g., Tesla in-vehicle browser).
+   - **Grafana** (optional full dashboard): [http://localhost:3000](http://localhost:3000) — start it first with `podman compose -f podman-compose.yml --profile grafana up -d grafana`.
 
 4. **Run a startup sanity check (recommended on Windows):**
 
@@ -128,14 +136,20 @@ All settings are controlled via environment variables (set in `.env`):
 | `HOTSPOT_USERNAME` | `admin` | Login username |
 | `HOTSPOT_PASSWORD` | *(required)* | Login password |
 | `SCRAPE_INTERVAL` | `5` | Fallback poll timeout in seconds when model-stream events are not received |
-| `GRAFANA_USER` | `admin` | Grafana admin username |
-| `GRAFANA_PASSWORD` | `admin` | Grafana admin password |
+| `GRAFANA_USER` | `admin` | Grafana admin username (when Grafana profile is enabled) |
+| `GRAFANA_PASSWORD` | `admin` | Grafana admin password (when Grafana profile is enabled) |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(empty)* | Token for a named Cloudflare tunnel (stable URL) |
 | `TUNNEL_CMD` | `tunnel --no-autoupdate --url http://dashboard:8080` | Tunnel command override (set for named tunnels) |
 
 ## Dashboards
 
 ### Grafana (full)
+
+Grafana is in standby by default. Enable it when needed:
+
+```sh
+podman compose -f podman-compose.yml --profile grafana up -d grafana
+```
 
 Available at [http://localhost:3000](http://localhost:3000). Includes:
 
@@ -198,6 +212,7 @@ For a persistent URL, create a free [Cloudflare](https://dash.cloudflare.com) ac
 ## Troubleshooting
 
 - **Scraper can't reach hotspot**: The scraper uses `network_mode: host` to access the LAN. Ensure 192.168.1.1 is reachable from the host.
+- **Grafana is not running**: Expected in default mode. Enable with `podman compose -f podman-compose.yml --profile grafana up -d grafana`.
 - **Login fails**: Check credentials in `.env`. The scraper uses Netgear-specific selectors (`#session_password`, `#login_submit`).
 - **No data in Grafana**: Check scraper logs with `podman compose -f podman-compose.yml logs scraper`. Verify Prometheus targets at `http://localhost:9090/targets`.
 - **All metrics showing `n/a` while hotspot is offline**: Expected behavior. Check `hotspot_source_state_code` (`2` = unavailable/offline, `4` = scrape error) and `hotspot_source_empty_streak`; the scraper now uses bounded restart/backoff instead of constant browser churn.

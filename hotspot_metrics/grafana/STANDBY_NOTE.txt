@@ -1,0 +1,4 @@
+Grafana is intentionally in standby by default in this project.
+
+Enable Grafana when needed:
+podman compose -f podman-compose.yml --profile grafana up -d grafana

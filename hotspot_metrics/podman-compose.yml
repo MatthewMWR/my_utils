@@ -1,8 +1,8 @@
 # The scraper uses host networking to reach the hotspot on the LAN
-# (192.168.1.1). Prometheus and Grafana share a bridge network and
-# expose ports to 0.0.0.0 so other devices on the LAN can connect.
+# (192.168.1.1). Prometheus, dashboard, and optional Grafana share a
+# bridge network and expose ports to 0.0.0.0 so other devices on the LAN can connect.
 #
-# Ports used: scraper :9100, prometheus :9090, grafana :3000
+# Ports used: scraper :9100, prometheus :9090, dashboard :8080, grafana(optional) :3000
 
 services:
   scraper:
@@ -36,9 +36,12 @@ services:
       - scraper
     restart: unless-stopped
 
+  # Optional full dashboard (disabled by default; enable with --profile grafana)
   grafana:
     image: docker.io/grafana/grafana:latest
     container_name: hotspot-grafana
+    profiles:
+      - grafana
     networks:
       - metrics
     ports:
