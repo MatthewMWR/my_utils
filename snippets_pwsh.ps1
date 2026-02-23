@@ -11,3 +11,8 @@ msiexec.exe /package pwsh.msi REGISTER_MANIFEST=1 ADD_PATH=1
 # function prompt with truncated path
 function prompt { '🅿 …\' + ($executionContext.SessionState.Path.CurrentLocation.Path -split '\\')[-1] + " >" }
 
+## create my usual dirs
+New-Item -Path c:\ -Name __my -ItemType Directory -ErrorAction SilentlyContinue
+New-Item -Path c:\__my -Name __repos -ItemType Directory -ErrorAction SilentlyContinue
+New-Item -Path c:\__my -Name __scratch_local -ItemType Directory -ErrorAction SilentlyContinue
+New-Item -Path c:\__my -Name __apps_local -ItemType Directory -ErrorAction SilentlyContinue
