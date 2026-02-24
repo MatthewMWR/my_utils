@@ -29,7 +29,6 @@ Write-Ok "Podman machine is running."
 $runningContainers = @(podman ps --format "{{.Names}}" 2>$null)
 $required = @(
     "hotspot-scraper",
-    "hotspot-prometheus",
     "hotspot-dashboard",
     "hotspot-tunnel"
 )
@@ -39,6 +38,18 @@ if ($missing.Count -gt 0) {
     Fail "Required containers not running: $($missing -join ', ')"
 }
 Write-Ok "All required containers are running."
+
+$prometheusRunning = "hotspot-prometheus" -in $runningContainers
+if ($prometheusRunning) {
+    $promCode = curl.exe -s -m $TimeoutSeconds -o NUL -w "%{http_code}" http://localhost:9090/-/ready
+    if ($promCode -eq "200") {
+        Write-Ok "Prometheus endpoint is reachable."
+    } else {
+        Write-Warn "Prometheus container is running but readiness endpoint returned HTTP $promCode."
+    }
+} else {
+    Write-Warn "Prometheus is in standby (optional). Enable with: podman compose -f podman-compose.yml --profile observability up -d prometheus"
+}
 
 $grafanaRunning = "hotspot-grafana" -in $runningContainers
 if ($grafanaRunning) {
@@ -58,26 +69,59 @@ if ($dashboardCode -ne "200") {
 }
 Write-Ok "Dashboard endpoint is reachable."
 
-$heartbeatRaw = curl.exe -s -m $TimeoutSeconds "http://localhost:8080/api/v1/query?query=hotspot_exporter_heartbeat_unixtime"
-try {
-    $heartbeat = $heartbeatRaw | ConvertFrom-Json
-} catch {
-    Fail "Heartbeat query returned invalid JSON."
+$snapshot = $null
+$lastSnapshotIssue = "snapshot endpoint did not return data"
+$deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+
+do {
+    $snapshotRaw = curl.exe -s -m $TimeoutSeconds "http://localhost:8080/snapshot"
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($snapshotRaw)) {
+        $lastSnapshotIssue = "snapshot endpoint returned no data"
+        Start-Sleep -Seconds 2
+        continue
+    }
+
+    try {
+        $snapshot = $snapshotRaw | ConvertFrom-Json
+    } catch {
+        $lastSnapshotIssue = "snapshot endpoint returned invalid JSON"
+        Start-Sleep -Seconds 2
+        continue
+    }
+
+    if ($null -eq $snapshot.heartbeat_unixtime) {
+        $lastSnapshotIssue = "snapshot payload is missing heartbeat_unixtime"
+        Start-Sleep -Seconds 2
+        continue
+    }
+
+    break
+} while ((Get-Date) -lt $deadline)
+
+if ($null -eq $snapshot -or $null -eq $snapshot.heartbeat_unixtime) {
+    Fail "Snapshot endpoint not ready within ${TimeoutSeconds}s ($lastSnapshotIssue)."
 }
 
-if ($heartbeat.status -ne "success" -or $heartbeat.data.result.Count -lt 1) {
-    Fail "Heartbeat metric missing from Prometheus proxy response."
-}
-
-$heartbeatUnix = [double]$heartbeat.data.result[0].value[1]
+$heartbeatUnix = [double]$snapshot.heartbeat_unixtime
 $nowUnix = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
 $heartbeatAge = [int][Math]::Round($nowUnix - $heartbeatUnix)
 
 if ($heartbeatAge -le 20) {
-    Write-Ok "Heartbeat is fresh (${heartbeatAge}s old)."
+    Write-Ok "Snapshot heartbeat is fresh (${heartbeatAge}s old)."
 } else {
-    Write-Warn "Heartbeat is stale (${heartbeatAge}s old). Scraper may be blocked."
+    Write-Warn "Snapshot heartbeat is stale (${heartbeatAge}s old). Scraper may be blocked."
 }
+
+$historyRaw = curl.exe -s -m $TimeoutSeconds "http://localhost:8080/history?seconds=300"
+try {
+    $history = $historyRaw | ConvertFrom-Json
+} catch {
+    Fail "History endpoint returned invalid JSON."
+}
+if ($null -eq $history.points) {
+    Fail "History endpoint did not return a points array."
+}
+Write-Ok "History endpoint returned $($history.points.Count) point(s)."
 
 $sseFirstLine = curl.exe -s -m $TimeoutSeconds -N http://localhost:8080/events | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($sseFirstLine)) {

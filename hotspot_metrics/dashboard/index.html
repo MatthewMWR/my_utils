@@ -37,8 +37,9 @@
   <span><span class="label">Band </span><span class="value" id="band">—</span></span>
   <span><span class="label">Service </span><span class="value" id="svc">—</span></span>
   <span><span class="label">Source </span><span class="value" id="source">—</span></span>
-  <span><span class="label">Scrape </span><span class="value" id="scrape-age">—</span></span>
-  <span><span class="label">Last data age </span><span class="value" id="latency">—</span></span>
+  <span><span class="label">Last scrape attempt age </span><span class="value" id="scrape-age">—</span></span>
+  <span><span class="label">Cell data age </span><span class="value" id="cell-data-age">—</span></span>
+  <span><span class="label">Heartbeat age </span><span class="value" id="latency">—</span></span>
 </div>
 
 <div class="quality-row">
@@ -53,6 +54,7 @@
 </div>
 
 <div class="chart-container"><canvas id="chart"></canvas></div>
+<div class="chart-container"><canvas id="raw-chart"></canvas></div>
 
 <div class="section-label">LTE</div>
 <div class="gauges">
@@ -69,13 +71,23 @@
 <div class="stale-warning" id="stale">⚠ Data may be stale — last update <span id="stale-ago"></span></div>
 
 <script>
-var PROM = '';
 var REFRESH = 3000;
-var HISTORY = 30 * 60;
+var HISTORY = 120;
 var HISTORY_POLL = 30000;
 var sseConnected = false;
 var lastHeartbeat = null;
 var lastScrapeTimestamp = null;
+var lastCellDataTimestamp = null;
+var lastAppliedTimestamp = null;
+var lastHeartbeatPoint = null;
+
+function setHistoryWindow(seconds) {
+  var parsed = parseInt(seconds, 10);
+  if (isNaN(parsed) || parsed < 1) return false;
+  if (parsed === HISTORY) return false;
+  HISTORY = parsed;
+  return true;
+}
 
 function qualityColor(v) {
   if (v == null) return 'na';
@@ -108,16 +120,22 @@ function setVal(id, val, colorFn) {
   else { el.textContent = Math.round(val); el.className = 'val ' + colorFn(val); }
 }
 
+function renderScrapeAge() {
+  if (lastHeartbeat == null || isNaN(lastHeartbeat)) return;
+  var age = Date.now() / 1000 - lastHeartbeat;
+  if (age < 0) age = 0;
+  var ageEl = document.getElementById('scrape-age');
+  ageEl.textContent = age.toFixed(1) + 's';
+  ageEl.className = 'value ' + (age < 3 ? 'good' : age < 12 ? 'warn' : 'bad');
+  var staleEl = document.getElementById('stale');
+  if (age > 60) { staleEl.style.display = 'block'; document.getElementById('stale-ago').textContent = age.toFixed(1) + 's'; }
+  else staleEl.style.display = 'none';
+}
+
 function updateScrapeAge(heartbeatTs) {
   if (heartbeatTs == null || isNaN(heartbeatTs)) return;
   lastHeartbeat = heartbeatTs;
-  var age = Math.round(Date.now() / 1000 - heartbeatTs);
-  var ageEl = document.getElementById('scrape-age');
-  ageEl.textContent = age < 10 ? 'live' : age + 's ago';
-  ageEl.className = 'value ' + (age < 30 ? 'good' : age < 120 ? 'warn' : 'bad');
-  var staleEl = document.getElementById('stale');
-  if (age > 60) { staleEl.style.display = 'block'; document.getElementById('stale-ago').textContent = age + 's ago'; }
-  else staleEl.style.display = 'none';
+  renderScrapeAge();
 }
 
 function renderLatency() {
@@ -137,6 +155,32 @@ function updateLatency(scrapeTs) {
   if (scrapeTs == null || isNaN(scrapeTs)) return;
   lastScrapeTimestamp = scrapeTs;
   renderLatency();
+}
+
+function isCellDataState(state) {
+  return state === 'ok' || state === 'no_signal';
+}
+
+function renderCellDataAge() {
+  var el = document.getElementById('cell-data-age');
+  if (lastCellDataTimestamp == null || isNaN(lastCellDataTimestamp)) {
+    el.textContent = '—';
+    el.className = 'value na';
+    return;
+  }
+  var age = Date.now() / 1000 - lastCellDataTimestamp;
+  if (age < 0) age = 0;
+  el.textContent = age.toFixed(1) + 's';
+  el.className = 'value ' + (age < 12 ? 'good' : age < 60 ? 'warn' : 'bad');
+}
+
+function updateCellDataAge(sampleTs, sourceState) {
+  if (sampleTs == null || isNaN(sampleTs)) return;
+  if (!isCellDataState(sourceState)) return;
+  if (lastCellDataTimestamp == null || sampleTs > lastCellDataTimestamp) {
+    lastCellDataTimestamp = sampleTs;
+  }
+  renderCellDataAge();
 }
 
 function sourceCodeToState(code) {
@@ -169,40 +213,20 @@ function setSourceStatusFromCode(code) {
   setSourceStatus(mapped.state, '');
 }
 
-function promQuery(expr) {
-  return fetch(PROM + '/api/v1/query?query=' + encodeURIComponent(expr))
-    .then(function(r) { return r.json(); })
-    .then(function(j) {
-      if (j.data.result.length === 0) return null;
-      return parseFloat(j.data.result[0].value[1]);
-    })
-    .catch(function() { return null; });
-}
-
-function promQueryRange(expr, start, end, step) {
-  return fetch(PROM + '/api/v1/query_range?query=' + encodeURIComponent(expr) + '&start=' + start + '&end=' + end + '&step=' + step)
-    .then(function(r) { return r.json(); })
-    .then(function(j) {
-      if (j.data.result.length === 0) return [];
-      return j.data.result[0].values.map(function(p) { return { t: p[0] * 1000, v: parseFloat(p[1]) }; });
-    })
-    .catch(function() { return []; });
-}
-
-function promQueryInfo(expr) {
-  return fetch(PROM + '/api/v1/query?query=' + encodeURIComponent(expr))
-    .then(function(r) { return r.json(); })
-    .then(function(j) {
-      if (j.data.result.length === 0) return '';
-      var m = j.data.result[0].metric;
-      return m.type || m.band || '';
-    })
-    .catch(function() { return ''; });
+function fetchJson(path) {
+  return fetch(path).then(function(r) {
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  });
 }
 
 var canvas = document.getElementById('chart');
 var ctx = canvas.getContext('2d');
-var lteHistory = [], nrHistory = [];
+var rawCanvas = document.getElementById('raw-chart');
+var rawCtx = rawCanvas.getContext('2d');
+var lteHistory = [], nrHistory = [], heartbeatHistory = [], scrapeHistory = [];
+var lteRsrpHistory = [], lteRsrqHistory = [], lteSnrHistory = [];
+var nrRsrpHistory = [], nrRsrqHistory = [], nrSnrHistory = [];
 
 function drawChart() {
   var dpr = window.devicePixelRatio || 1;
@@ -227,7 +251,7 @@ function drawChart() {
     ctx.fillText(v, 4, y + 3);
   }
 
-  if (lteHistory.length === 0 && nrHistory.length === 0) return;
+  if (lteHistory.length === 0 && nrHistory.length === 0 && heartbeatHistory.length === 0 && scrapeHistory.length === 0) return;
 
   var now = Date.now();
   var tMin = now - HISTORY * 1000;
@@ -249,8 +273,36 @@ function drawChart() {
     ctx.stroke();
   }
 
+  function drawHeartbeatDots(data) {
+    if (data.length === 0) return;
+    ctx.fillStyle = '#888';
+    var y = PAD.top + 6;
+    for (var i = 0; i < data.length; i++) {
+      var x = PAD.left + ((data[i].t - tMin) / (tMax - tMin)) * cw;
+      if (x < PAD.left || x > (W - PAD.right)) continue;
+      ctx.beginPath();
+      ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
+  function drawScrapeDots(data) {
+    if (data.length === 0) return;
+    ctx.fillStyle = '#f2cc0c';
+    var y = PAD.top + 12;
+    for (var i = 0; i < data.length; i++) {
+      var x = PAD.left + ((data[i].t - tMin) / (tMax - tMin)) * cw;
+      if (x < PAD.left || x > (W - PAD.right)) continue;
+      ctx.beginPath();
+      ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+
   drawLine(lteHistory, '#5794f2');
   drawLine(nrHistory, '#e36ef2');
+  drawHeartbeatDots(heartbeatHistory);
+  drawScrapeDots(scrapeHistory);
 
   ctx.fillStyle = '#555';
   ctx.font = '10px sans-serif';
@@ -269,40 +321,98 @@ function drawChart() {
   ctx.fillRect(PAD.left + 52, PAD.top + 4, 12, 3);
   ctx.fillStyle = '#aaa';
   ctx.fillText('5G', PAD.left + 68, PAD.top + 10);
+  ctx.fillStyle = '#888';
+  ctx.beginPath();
+  ctx.arc(PAD.left + 97, PAD.top + 5.5, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('HB', PAD.left + 104, PAD.top + 10);
+  ctx.fillStyle = '#f2cc0c';
+  ctx.beginPath();
+  ctx.arc(PAD.left + 129, PAD.top + 5.5, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('SCR', PAD.left + 136, PAD.top + 10);
 }
 
-function refresh() {
-  Promise.all([
-    promQuery('hotspot_lte_quality'),
-    promQuery('hotspot_nr_quality'),
-    promQuery('hotspot_lte_rsrp_dbm'),
-    promQuery('hotspot_lte_rsrq_db'),
-    promQuery('hotspot_lte_snr_db'),
-    promQuery('hotspot_nr_rsrp_dbm'),
-    promQuery('hotspot_nr_rsrq_db'),
-    promQuery('hotspot_nr_snr_db'),
-    promQuery('hotspot_source_state_code'),
-    promQuery('hotspot_last_scrape_unixtime'),
-    promQueryInfo('hotspot_radio_band_info'),
-    promQueryInfo('hotspot_service_type_info'),
-  ]).then(function(vals) {
-    setVal('lte-q', vals[0], qualityColor);
-    setVal('nr-q', vals[1], qualityColor);
-    setVal('lte-rsrp', vals[2], rsrpColor);
-    setVal('lte-rsrq', vals[3], rsrqColor);
-    setVal('lte-snr', vals[4], snrColor);
-    setVal('nr-rsrp', vals[5], rsrpColor);
-    setVal('nr-rsrq', vals[6], rsrqColor);
-    setVal('nr-snr', vals[7], snrColor);
-    setSourceStatusFromCode(vals[8]);
-    updateLatency(vals[9]);
+function drawRawChart() {
+  var dpr = window.devicePixelRatio || 1;
+  var rect = rawCanvas.parentElement.getBoundingClientRect();
+  rawCanvas.width = rect.width * dpr;
+  rawCanvas.height = rect.height * dpr;
+  rawCtx.scale(dpr, dpr);
+  var W = rect.width, H = rect.height;
+  var PAD = { top: 10, right: 10, bottom: 20, left: 40 };
+  var cw = W - PAD.left - PAD.right;
+  var ch = H - PAD.top - PAD.bottom;
+  var YMIN = -120, YMAX = 30;
 
-    document.getElementById('band').textContent = vals[10] || '—';
-    document.getElementById('svc').textContent = vals[11] || '—';
-  });
+  rawCtx.clearRect(0, 0, W, H);
+
+  rawCtx.strokeStyle = '#222';
+  rawCtx.lineWidth = 1;
+  rawCtx.font = '10px sans-serif';
+  rawCtx.fillStyle = '#555';
+  for (var v = YMIN; v <= YMAX; v += 30) {
+    var y = PAD.top + ch - ((v - YMIN) / (YMAX - YMIN)) * ch;
+    rawCtx.beginPath(); rawCtx.moveTo(PAD.left, y); rawCtx.lineTo(W - PAD.right, y); rawCtx.stroke();
+    rawCtx.fillText(v, 6, y + 3);
+  }
+
+  var now = Date.now();
+  var tMin = now - HISTORY * 1000;
+  var tMax = now;
+
+  function drawSeries(data, color) {
+    if (data.length < 2) return;
+    rawCtx.strokeStyle = color;
+    rawCtx.lineWidth = 1.5;
+    rawCtx.beginPath();
+    var started = false;
+    for (var i = 0; i < data.length; i++) {
+      var x = PAD.left + ((data[i].t - tMin) / (tMax - tMin)) * cw;
+      var yv = Math.max(YMIN, Math.min(YMAX, data[i].v));
+      var py = PAD.top + ch - ((yv - YMIN) / (YMAX - YMIN)) * ch;
+      if (!started) { rawCtx.moveTo(x, py); started = true; }
+      else rawCtx.lineTo(x, py);
+    }
+    rawCtx.stroke();
+  }
+
+  drawSeries(lteRsrpHistory, '#5794f2');
+  drawSeries(lteRsrqHistory, '#8ab8ff');
+  drawSeries(lteSnrHistory, '#33a2ff');
+  drawSeries(nrRsrpHistory, '#e36ef2');
+  drawSeries(nrRsrqHistory, '#f4a1ff');
+  drawSeries(nrSnrHistory, '#ff7adf');
+
+  rawCtx.fillStyle = '#555';
+  rawCtx.font = '10px sans-serif';
+  for (var i = 0; i <= 6; i++) {
+    var t = new Date(tMin + (i / 6) * (tMax - tMin));
+    var lbl = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
+    var lx = PAD.left + (i / 6) * cw;
+    rawCtx.fillText(lbl, lx - 15, H - 4);
+  }
+
+  function legendDot(x, color, label) {
+    rawCtx.fillStyle = color;
+    rawCtx.fillRect(x, PAD.top + 3, 8, 2);
+    rawCtx.fillStyle = '#aaa';
+    rawCtx.fillText(label, x + 12, PAD.top + 10);
+  }
+
+  legendDot(PAD.left + 8, '#5794f2', 'L-RSRP');
+  legendDot(PAD.left + 72, '#8ab8ff', 'L-RSRQ');
+  legendDot(PAD.left + 136, '#33a2ff', 'L-SNR');
+  legendDot(PAD.left + 190, '#e36ef2', 'N-RSRP');
+  legendDot(PAD.left + 254, '#f4a1ff', 'N-RSRQ');
+  legendDot(PAD.left + 318, '#ff7adf', 'N-SNR');
 }
 
 function applyLiveData(d) {
+  if (!d) return;
+  setHistoryWindow(d.dashboard_history_seconds);
   setVal('lte-q', d.lte_quality, qualityColor);
   setVal('nr-q', d.nr_quality, qualityColor);
   setVal('lte-rsrp', d.lte_rsrp, rsrpColor);
@@ -314,17 +424,57 @@ function applyLiveData(d) {
   document.getElementById('band').textContent = d.band || '—';
   document.getElementById('svc').textContent = d.service_type || '—';
   setSourceStatus(d.source_state, d.source_message);
-  if (d.heartbeat_unixtime) updateScrapeAge(d.heartbeat_unixtime);
+  if (d.scrape_unixtime) updateScrapeAge(d.scrape_unixtime);
   else if (d.timestamp) updateScrapeAge(d.timestamp);
-  updateLatency(d.scrape_unixtime || d.timestamp);
-  // Append to local history for chart
-  var now = Date.now();
-  if (d.lte_quality != null) lteHistory.push({ t: now, v: d.lte_quality });
-  if (d.nr_quality != null && !isNaN(d.nr_quality)) nrHistory.push({ t: now, v: d.nr_quality });
-  var cutoff = now - HISTORY * 1000;
-  lteHistory = lteHistory.filter(function(p) { return p.t >= cutoff; });
-  nrHistory = nrHistory.filter(function(p) { return p.t >= cutoff; });
-  drawChart();
+  updateLatency(d.heartbeat_unixtime || d.timestamp);
+
+  var heartbeatAdded = false;
+  var heartbeatTs = d.heartbeat_unixtime || d.timestamp;
+  if (heartbeatTs != null && !isNaN(heartbeatTs) && heartbeatTs !== lastHeartbeatPoint) {
+    lastHeartbeatPoint = heartbeatTs;
+    heartbeatHistory.push({ t: heartbeatTs * 1000 });
+    heartbeatAdded = true;
+  }
+
+  var sampleAdded = false;
+  var sampleTs = d.scrape_unixtime || d.timestamp;
+  updateCellDataAge(sampleTs, d.source_state);
+  if (sampleTs != null && !isNaN(sampleTs) && sampleTs !== lastAppliedTimestamp) {
+    lastAppliedTimestamp = sampleTs;
+    var now = sampleTs * 1000;
+    scrapeHistory.push({ t: now });
+    if (d.lte_rsrp != null && !isNaN(d.lte_rsrp)) lteRsrpHistory.push({ t: now, v: d.lte_rsrp });
+    if (d.lte_rsrq != null && !isNaN(d.lte_rsrq)) lteRsrqHistory.push({ t: now, v: d.lte_rsrq });
+    if (d.lte_snr != null && !isNaN(d.lte_snr)) lteSnrHistory.push({ t: now, v: d.lte_snr });
+    if (d.nr_rsrp != null && !isNaN(d.nr_rsrp)) nrRsrpHistory.push({ t: now, v: d.nr_rsrp });
+    if (d.nr_rsrq != null && !isNaN(d.nr_rsrq)) nrRsrqHistory.push({ t: now, v: d.nr_rsrq });
+    if (d.nr_snr != null && !isNaN(d.nr_snr)) nrSnrHistory.push({ t: now, v: d.nr_snr });
+    if (d.lte_quality != null && !isNaN(d.lte_quality)) lteHistory.push({ t: now, v: d.lte_quality });
+    if (d.nr_quality != null && !isNaN(d.nr_quality)) nrHistory.push({ t: now, v: d.nr_quality });
+    sampleAdded = true;
+  }
+
+  if (heartbeatAdded || sampleAdded) {
+    var cutoff = Date.now() - HISTORY * 1000;
+    lteHistory = lteHistory.filter(function(p) { return p.t >= cutoff; });
+    nrHistory = nrHistory.filter(function(p) { return p.t >= cutoff; });
+    heartbeatHistory = heartbeatHistory.filter(function(p) { return p.t >= cutoff; });
+    scrapeHistory = scrapeHistory.filter(function(p) { return p.t >= cutoff; });
+    lteRsrpHistory = lteRsrpHistory.filter(function(p) { return p.t >= cutoff; });
+    lteRsrqHistory = lteRsrqHistory.filter(function(p) { return p.t >= cutoff; });
+    lteSnrHistory = lteSnrHistory.filter(function(p) { return p.t >= cutoff; });
+    nrRsrpHistory = nrRsrpHistory.filter(function(p) { return p.t >= cutoff; });
+    nrRsrqHistory = nrRsrqHistory.filter(function(p) { return p.t >= cutoff; });
+    nrSnrHistory = nrSnrHistory.filter(function(p) { return p.t >= cutoff; });
+    drawChart();
+    drawRawChart();
+  }
+}
+
+function refreshSnapshot() {
+  return fetchJson('/snapshot')
+    .then(applyLiveData)
+    .catch(function() {});
 }
 
 function connectSSE() {
@@ -341,35 +491,72 @@ function connectSSE() {
 }
 
 function refreshHistory() {
-  var now = Math.floor(Date.now() / 1000);
-  var start = now - HISTORY;
-  Promise.all([
-    promQueryRange('hotspot_lte_quality', start, now, 5),
-    promQueryRange('hotspot_nr_quality', start, now, 5),
-  ]).then(function(hist) {
-    lteHistory = hist[0];
-    nrHistory = hist[1];
+  fetchJson('/history?seconds=' + HISTORY)
+    .then(function(hist) {
+    if (setHistoryWindow(hist.window_seconds)) {
+      refreshHistory();
+      return;
+    }
+    var points = Array.isArray(hist.points) ? hist.points : [];
+    lteHistory = [];
+    nrHistory = [];
+    heartbeatHistory = [];
+    scrapeHistory = [];
+    lteRsrpHistory = [];
+    lteRsrqHistory = [];
+    lteSnrHistory = [];
+    nrRsrpHistory = [];
+    nrRsrqHistory = [];
+    nrSnrHistory = [];
+    lastCellDataTimestamp = null;
+    lastAppliedTimestamp = null;
+    lastHeartbeatPoint = null;
+    for (var i = 0; i < points.length; i++) {
+      var point = points[i];
+      var hbTs = parseFloat(point.heartbeat_unixtime != null ? point.heartbeat_unixtime : point.timestamp);
+      if (!isNaN(hbTs)) {
+        heartbeatHistory.push({ t: hbTs * 1000 });
+        lastHeartbeatPoint = hbTs;
+      }
+      var ts = parseFloat(point.scrape_unixtime != null ? point.scrape_unixtime : point.timestamp);
+      if (isNaN(ts)) continue;
+      scrapeHistory.push({ t: ts * 1000 });
+      var lteRsrp = parseFloat(point.lte_rsrp);
+      var lteRsrq = parseFloat(point.lte_rsrq);
+      var lteSnr = parseFloat(point.lte_snr);
+      var nrRsrp = parseFloat(point.nr_rsrp);
+      var nrRsrq = parseFloat(point.nr_rsrq);
+      var nrSnr = parseFloat(point.nr_snr);
+      if (!isNaN(lteRsrp)) lteRsrpHistory.push({ t: ts * 1000, v: lteRsrp });
+      if (!isNaN(lteRsrq)) lteRsrqHistory.push({ t: ts * 1000, v: lteRsrq });
+      if (!isNaN(lteSnr)) lteSnrHistory.push({ t: ts * 1000, v: lteSnr });
+      if (!isNaN(nrRsrp)) nrRsrpHistory.push({ t: ts * 1000, v: nrRsrp });
+      if (!isNaN(nrRsrq)) nrRsrqHistory.push({ t: ts * 1000, v: nrRsrq });
+      if (!isNaN(nrSnr)) nrSnrHistory.push({ t: ts * 1000, v: nrSnr });
+      if (isCellDataState(point.source_state)) {
+        lastCellDataTimestamp = ts;
+      }
+      if (point.lte_quality != null && !isNaN(point.lte_quality)) lteHistory.push({ t: ts * 1000, v: point.lte_quality });
+      if (point.nr_quality != null && !isNaN(point.nr_quality)) nrHistory.push({ t: ts * 1000, v: point.nr_quality });
+      lastAppliedTimestamp = ts;
+    }
+    renderCellDataAge();
     drawChart();
-  });
+    drawRawChart();
+  })
+  .catch(function() {});
 }
 
-function refreshHeartbeat() {
-  promQuery('hotspot_exporter_heartbeat_unixtime').then(function(v) {
-    if (v != null) updateScrapeAge(v);
-  });
-}
-
-// Boot: load history from Prometheus, start SSE, fall back to polling
-refresh();
-refreshHeartbeat();
-refreshHistory();
-setInterval(refreshHeartbeat, REFRESH);
-setInterval(refreshHistory, HISTORY_POLL);
+// Boot: load history from scraper, start SSE, fall back to snapshot polling
+refreshSnapshot().finally(function() { refreshHistory(); });
 connectSSE();
 // Polling fallback when SSE is disconnected
-setInterval(function() { if (!sseConnected) refresh(); }, REFRESH);
+setInterval(function() { if (!sseConnected) refreshSnapshot(); }, REFRESH);
+setInterval(function() { if (!sseConnected) refreshHistory(); }, HISTORY_POLL);
+setInterval(renderScrapeAge, 1000);
+setInterval(renderCellDataAge, 1000);
 setInterval(renderLatency, 1000);
-window.addEventListener('resize', drawChart);
+window.addEventListener('resize', function() { drawChart(); drawRawChart(); });
 </script>
 </body>
 </html>

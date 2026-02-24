@@ -7,19 +7,28 @@ import queue
 import re
 import threading
 import time
+from collections import deque
 
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from prometheus_client import Counter, Gauge, Info, start_http_server
 from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
+from urllib.parse import parse_qs, urlparse
 
 # --------------- Config ---------------
 HOTSPOT_URL = os.getenv("HOTSPOT_URL", "http://192.168.1.1")
 DIAG_HASH = "settings/diagnostics"
 USERNAME = os.getenv("HOTSPOT_USERNAME", "admin")
 PASSWORD = os.getenv("HOTSPOT_PASSWORD", "")
-SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", "5"))
+SCRAPE_INTERVAL = int(os.getenv("SCRAPE_INTERVAL", "10"))
 METRICS_PORT = int(os.getenv("METRICS_PORT", "9100"))
 SSE_PORT = int(os.getenv("SSE_PORT", "9101"))
+HISTORY_RETENTION_SECONDS = int(os.getenv("HISTORY_RETENTION_SECONDS", "3600"))
+HISTORY_MAX_POINTS = int(os.getenv("HISTORY_MAX_POINTS", "5000"))
+PROCESS_HEARTBEAT_INTERVAL = float(os.getenv("PROCESS_HEARTBEAT_INTERVAL", "1"))
+DASHBOARD_HISTORY_SECONDS = max(
+    1,
+    min(HISTORY_RETENTION_SECONDS, int(os.getenv("DASHBOARD_HISTORY_SECONDS", "120"))),
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -45,7 +54,7 @@ RADIO_BAND = Info("hotspot_radio_band", "Current Radio Band")
 SCRAPE_SUCCESS = Gauge("hotspot_scrape_success", "1 if last scrape succeeded, 0 otherwise")
 EXPORTER_HEARTBEAT_UNIXTIME = Gauge(
     "hotspot_exporter_heartbeat_unixtime",
-    "Unix timestamp of last successful exporter loop heartbeat",
+    "Unix timestamp of periodic exporter process heartbeat",
 )
 SCRAPE_ATTEMPT_TOTAL = Counter("hotspot_scrape_attempt_total", "Total scrape attempts")
 SCRAPE_FAILURE_TOTAL = Counter("hotspot_scrape_failure_total", "Total scrape failures")
@@ -76,6 +85,20 @@ NUMERIC_FIELDS = (
     "lte_rsrp", "lte_rsrq", "lte_snr",
     "nr_rsrp", "nr_rsrq", "nr_snr",
 )
+
+_process_heartbeat_unixtime = time.time()
+_process_heartbeat_lock = threading.Lock()
+
+
+def set_process_heartbeat(heartbeat_unixtime: float):
+    global _process_heartbeat_unixtime
+    with _process_heartbeat_lock:
+        _process_heartbeat_unixtime = heartbeat_unixtime
+
+
+def get_process_heartbeat() -> float:
+    with _process_heartbeat_lock:
+        return _process_heartbeat_unixtime
 
 # --------------- SSE broadcast ---------------
 
@@ -110,33 +133,126 @@ class SSEBroadcaster:
 sse_broadcaster = SSEBroadcaster()
 
 
+class SnapshotStore:
+    """Thread-safe latest snapshot + bounded in-memory history."""
+
+    def __init__(self):
+        self._latest: dict | None = None
+        self._history: deque[dict] = deque(maxlen=HISTORY_MAX_POINTS)
+        self._lock = threading.Lock()
+
+    def publish(self, payload: dict):
+        timestamp = float(payload.get("timestamp", time.time()))
+        point = {
+            "timestamp": timestamp,
+            "heartbeat_unixtime": payload.get("heartbeat_unixtime"),
+            "scrape_unixtime": payload.get("scrape_unixtime"),
+            "source_state": payload.get("source_state"),
+            "lte_rsrp": payload.get("lte_rsrp"),
+            "lte_rsrq": payload.get("lte_rsrq"),
+            "lte_snr": payload.get("lte_snr"),
+            "nr_rsrp": payload.get("nr_rsrp"),
+            "nr_rsrq": payload.get("nr_rsrq"),
+            "nr_snr": payload.get("nr_snr"),
+            "lte_quality": payload.get("lte_quality"),
+            "nr_quality": payload.get("nr_quality"),
+        }
+        with self._lock:
+            self._latest = dict(payload)
+            self._history.append(point)
+            cutoff = timestamp - HISTORY_RETENTION_SECONDS
+            while self._history and self._history[0]["timestamp"] < cutoff:
+                self._history.popleft()
+
+    def latest(self) -> dict | None:
+        with self._lock:
+            return dict(self._latest) if self._latest is not None else None
+
+    def history(self, seconds: int) -> list[dict]:
+        cutoff = time.time() - seconds
+        with self._lock:
+            return [dict(point) for point in self._history if point["timestamp"] >= cutoff]
+
+    def touch_heartbeat(self, heartbeat_unixtime: float):
+        with self._lock:
+            if self._latest is None:
+                return
+            self._latest["heartbeat_unixtime"] = heartbeat_unixtime
+
+    def heartbeat_event_payload(self, heartbeat_unixtime: float) -> dict | None:
+        with self._lock:
+            if self._latest is None:
+                return None
+            payload = dict(self._latest)
+        payload["heartbeat_unixtime"] = heartbeat_unixtime
+        return payload
+
+
+snapshot_store = SnapshotStore()
+
+
 class _SSEHandler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
-    def do_GET(self):
-        if self.path != "/events":
-            self.send_error(404)
-            return
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
+    def _send_json(self, data: dict, status: int = 200):
+        payload = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
         self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
+        self.send_header("Content-Length", str(len(payload)))
         self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        q = sse_broadcaster.subscribe()
-        try:
-            while True:
-                try:
-                    payload = q.get(timeout=15)
-                    self.wfile.write(f"data: {payload}\n\n".encode())
-                    self.wfile.flush()
-                except queue.Empty:
-                    self.wfile.write(b": keepalive\n\n")
-                    self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, OSError):
-            pass
-        finally:
-            sse_broadcaster.unsubscribe(q)
+        self.wfile.write(payload)
+
+    def do_GET(self):
+        parsed = urlparse(self.path)
+
+        if parsed.path == "/snapshot":
+            snapshot = snapshot_store.latest()
+            if snapshot is None:
+                self._send_json({"ready": False, "message": "no snapshot yet"}, status=503)
+            else:
+                self._send_json(snapshot)
+            return
+
+        if parsed.path == "/history":
+            params = parse_qs(parsed.query)
+            raw_seconds = params.get("seconds", [str(HISTORY_RETENTION_SECONDS)])[0]
+            try:
+                seconds = max(1, min(HISTORY_RETENTION_SECONDS, int(raw_seconds)))
+            except ValueError:
+                self._send_json({"error": "invalid seconds parameter"}, status=400)
+                return
+            self._send_json({
+                "window_seconds": DASHBOARD_HISTORY_SECONDS,
+                "points": snapshot_store.history(seconds),
+            })
+            return
+
+        if parsed.path == "/events":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            q = sse_broadcaster.subscribe()
+            try:
+                while True:
+                    try:
+                        payload = q.get(timeout=15)
+                        self.wfile.write(f"data: {payload}\n\n".encode())
+                        self.wfile.flush()
+                    except queue.Empty:
+                        self.wfile.write(b": keepalive\n\n")
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+            finally:
+                sse_broadcaster.unsubscribe(q)
+            return
+
+        self.send_error(404)
 
     def log_message(self, format, *args):
         pass
@@ -148,6 +264,28 @@ def _start_sse_server():
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     log.info("SSE server listening on :%d/events", SSE_PORT)
+
+
+def _start_process_heartbeat():
+    interval = max(PROCESS_HEARTBEAT_INTERVAL, 0.1)
+    now = time.time()
+    set_process_heartbeat(now)
+    EXPORTER_HEARTBEAT_UNIXTIME.set(now)
+
+    def _beat_loop():
+        while True:
+            hb_now = time.time()
+            set_process_heartbeat(hb_now)
+            EXPORTER_HEARTBEAT_UNIXTIME.set(hb_now)
+            snapshot_store.touch_heartbeat(hb_now)
+            payload = snapshot_store.heartbeat_event_payload(hb_now)
+            if payload is not None:
+                sse_broadcaster.broadcast(payload)
+            time.sleep(interval)
+
+    thread = threading.Thread(target=_beat_loop, daemon=True)
+    thread.start()
+    log.info("Process heartbeat running every %.1fs", interval)
 
 # --------------- Metric extraction (ported from userscript) ---------------
 
@@ -338,6 +476,8 @@ def parse_model_payload(model: dict) -> tuple[dict, str, str]:
     return data, "source_unavailable", "model payload missing diagnostics sections"
 
 
+# --------------- Prometheus metrics ---------------
+
 def set_source_state(state: str, message: str, empty_streak: int):
     SOURCE_STATE_CODE.set(SOURCE_STATE_CODES[state])
     SOURCE_EMPTY_STREAK.set(empty_streak)
@@ -403,6 +543,7 @@ def update_gauges(
         "source_message": source_message,
         "empty_streak": empty_streak,
         "heartbeat_unixtime": heartbeat_unixtime,
+        "dashboard_history_seconds": DASHBOARD_HISTORY_SECONDS,
         "scrape_unixtime": scrape_unixtime,
         "scrape_success": scrape_success,
         "timestamp": scrape_unixtime,
@@ -540,6 +681,7 @@ def run():
     log.info("Starting Prometheus metrics server on :%d", METRICS_PORT)
     start_http_server(METRICS_PORT)
     _start_sse_server()
+    _start_process_heartbeat()
 
     log.info("Streaming model events (fallback poll after %ds silence) …", SCRAPE_INTERVAL)
     scraper = None
@@ -547,8 +689,6 @@ def run():
     restart_threshold = 5
     try:
         while True:
-            heartbeat_now = time.time()
-            EXPORTER_HEARTBEAT_UNIXTIME.set(heartbeat_now)
             SCRAPE_ATTEMPT_TOTAL.inc()
 
             if scraper is None:
@@ -564,8 +704,9 @@ def run():
                         "startup_error",
                         "browser initialization failed",
                         empty_streak,
-                        heartbeat_now,
+                        get_process_heartbeat(),
                     )
+                    snapshot_store.publish(payload)
                     sse_broadcaster.broadcast(payload)
                     backoff_seconds = min(SCRAPE_INTERVAL * max(1, restart_threshold // 5), 60)
                     restart_threshold = min(restart_threshold * 2, 60)
@@ -594,7 +735,8 @@ def run():
                 empty_streak = 0
                 restart_threshold = 5
 
-            payload = update_gauges(data, state, message, empty_streak, heartbeat_now)
+            payload = update_gauges(data, state, message, empty_streak, get_process_heartbeat())
+            snapshot_store.publish(payload)
             sse_broadcaster.broadcast(payload)
 
             if state in ("source_unavailable", "parse_warning", "scrape_error") and empty_streak >= restart_threshold:

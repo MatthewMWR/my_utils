@@ -6,29 +6,33 @@ Scrapes LTE/5G signal metrics from the hotspot admin page and visualizes them vi
 ## Architecture
 
 ```
-┌──────────────┐     ┌────────────┐     ┌──────────┐     ┌───────────┐
-│   Hotspot    │◄────│  Scraper   │────►│Prometheus│────►│  Grafana  │
-│ 192.168.1.1  │     │(Playwright)│     │  :9090   │     │  :3000    │
-└──────────────┘     └───:9100────┘     └────┬─────┘     └───────────┘
-                                             │
-                                     ┌───────┴───────┐     ┌──────────────┐
-                                     │   Dashboard   │◄────│   Tunnel     │
-                                     │ (nginx) :8080 │     │ (cloudflared)│
-                                     └───────────────┘     └──────┬───────┘
-                                                                  │
-                                                          *.trycloudflare.com
+┌──────────────┐     ┌──────────────────────────┐     ┌──────────────┐
+│   Hotspot    │◄────│  Scraper (Playwright)    │────►│  Dashboard   │
+│ 192.168.1.1  │     │  :9100 metrics           │     │ (nginx):8080 │
+└──────────────┘     │  :9101 SSE/snapshot/history     └──────┬───────┘
+                     └──────────────────────────┘              │
+                                                               ▼
+                                                       ┌──────────────┐
+                                                       │   Tunnel     │
+                                                       │ (cloudflared)│
+                                                       └──────┬───────┘
+                                                              │
+                                                      *.trycloudflare.com
+
+Optional observability profile:
+Scraper (:9100) → Prometheus (:9090) → Grafana (:3000)
 ```
 
-Grafana is in standby by default and can be enabled with the `grafana` profile.
+Prometheus and Grafana are optional and enabled via profiles.
 
 ### Services
 
 | Container | Purpose | Port |
 |-----------|---------|------|
-| **scraper** | Python + Playwright headless browser. Logs in once, then streams hotspot model updates from the diagnostics page (`/api/model.json`) and falls back to page polling if the stream stalls. Exposes Prometheus gauges and an SSE stream. | `:9100` metrics, `:9101` SSE (host network) |
-| **prometheus** | Scrapes the exporter every 5 seconds. | `:9090` |
+| **scraper** | Python + Playwright headless browser. Logs in once, then streams hotspot model updates from the diagnostics page (`/api/model.json`) and falls back to page polling if the stream stalls. Exposes Prometheus gauges plus dashboard endpoints (`/events`, `/snapshot`, `/history`). | `:9100` metrics, `:9101` realtime API (host network) |
+| **prometheus** | Optional metrics storage/scraper for long-term observability. Enabled with `--profile observability` (or implicitly by `--profile grafana`). | `:9090` |
 | **grafana** | Full-featured dashboard with pre-provisioned panels. Anonymous viewer access enabled. **Disabled by default**; enable with `--profile grafana`. | `:3000` |
-| **dashboard** | Lightweight single-page HTML dashboard (~10KB) served via nginx, with Prometheus API proxy. Designed for constrained browsers (e.g., Tesla in-vehicle browser). | `:8080` |
+| **dashboard** | Lightweight single-page HTML dashboard (~10KB) served via nginx. Reads scraper realtime endpoints only (`/events`, `/snapshot`, `/history`) for low-latency updates. | `:8080` |
 | **tunnel** | Cloudflare quick tunnel. Exposes the lightweight dashboard via a public `*.trycloudflare.com` URL. No account required. | — |
 
 ## Metrics Exported
@@ -46,7 +50,7 @@ Grafana is in standby by default and can be enabled with the `grafana` profile.
 | `hotspot_service_type_info` | Current PS Service Type (e.g., 5GMMWAVE) |
 | `hotspot_radio_band_info` | Current Radio Band |
 | `hotspot_scrape_success` | Scrape health (1 = OK, 0 = fail) |
-| `hotspot_exporter_heartbeat_unixtime` | Exporter loop heartbeat timestamp (unix seconds) |
+| `hotspot_exporter_heartbeat_unixtime` | Periodic exporter process heartbeat timestamp (unix seconds) |
 | `hotspot_scrape_attempt_total` | Total scrape attempts |
 | `hotspot_scrape_failure_total` | Total scrape failures |
 | `hotspot_source_state_code` | Source state code (`0=ok`, `1=no_signal`, `2=source_unavailable`, `3=parse_warning`, `4=scrape_error`, `5=startup_error`) |
@@ -83,9 +87,13 @@ Grafana is in standby by default and can be enabled with the `grafana` profile.
    podman compose -f podman-compose.yml up -d --build
    ```
 
-   Optional: enable Grafana as well:
+   Optional: enable observability services:
 
    ```sh
+   # Prometheus only
+   podman compose -f podman-compose.yml --profile observability up -d prometheus
+
+   # Grafana (auto-enables Prometheus dependency)
    podman compose -f podman-compose.yml --profile grafana up -d grafana
    ```
 
@@ -113,7 +121,7 @@ Grafana is in standby by default and can be enabled with the `grafana` profile.
 podman compose -f podman-compose.yml down
 ```
 
-Data volumes (Prometheus history, Grafana settings) are preserved. To also stop the Podman VM:
+Data volumes (Prometheus history, Grafana settings) are preserved when observability profiles are enabled. To also stop the Podman VM:
 
 ```sh
 podman machine stop
@@ -135,7 +143,11 @@ All settings are controlled via environment variables (set in `.env`):
 | `HOTSPOT_URL` | `http://192.168.1.1` | Hotspot admin URL |
 | `HOTSPOT_USERNAME` | `admin` | Login username |
 | `HOTSPOT_PASSWORD` | *(required)* | Login password |
-| `SCRAPE_INTERVAL` | `5` | Fallback poll timeout in seconds when model-stream events are not received |
+| `SCRAPE_INTERVAL` | `10` | Fallback poll timeout in seconds when model-stream events are not received |
+| `DASHBOARD_HISTORY_SECONDS` | `120` | Dashboard chart x-axis window in seconds |
+| `PROCESS_HEARTBEAT_INTERVAL` | `1` | Strictly periodic process heartbeat interval in seconds |
+| `HISTORY_RETENTION_SECONDS` | `3600` | In-memory history retention for scraper `/history` endpoint |
+| `HISTORY_MAX_POINTS` | `5000` | Upper bound for in-memory history points |
 | `GRAFANA_USER` | `admin` | Grafana admin username (when Grafana profile is enabled) |
 | `GRAFANA_PASSWORD` | `admin` | Grafana admin password (when Grafana profile is enabled) |
 | `CLOUDFLARE_TUNNEL_TOKEN` | *(empty)* | Token for a named Cloudflare tunnel (stable URL) |
@@ -165,12 +177,14 @@ Anonymous viewer access is enabled. Sign in as admin to edit.
 Available at [http://localhost:8080](http://localhost:8080) and via the Cloudflare tunnel URL. A single ~10KB HTML page with:
 
 - LTE and 5G quality scores with color-coded values
-- 30-minute quality time-series chart (canvas-based, no dependencies)
+- Configurable quality time-series chart (default 120s window; canvas-based, no dependencies)
+- Raw LTE/5G signal chart (RSRP/RSRQ/SNR) with fixed dB-scale axis (-120 to +30)
 - Individual RSRP, RSRQ, SNR gauges for both LTE and 5G
 - Source status indicator (OK / No signal / Unavailable / Parse warning / Errors)
-- Live scrape-age indicator and stale-data warning
-- Near-E2E latency indicator (`now - scrape_timestamp`) in the top status bar
-- **Server-Sent Events (SSE)** for near-real-time updates pushed from the scraper (falls back to Prometheus polling if SSE is unavailable)
+- Last data age indicator (`now - scrape_unixtime`) and stale-data warning
+- Cell data age indicator (`now - last scrape_unixtime where source_state is ok/no_signal`)
+- Heartbeat age indicator (`now - heartbeat_unixtime`) in the top status bar
+- **Server-Sent Events (SSE)** for near-real-time updates pushed from the scraper (falls back to scraper `/snapshot` polling if SSE is unavailable)
 
 Designed for constrained browsers where Grafana's 10MB JS payload is too heavy (e.g., Tesla in-vehicle browser, low-bandwidth connections).
 
@@ -214,9 +228,9 @@ For a persistent URL, create a free [Cloudflare](https://dash.cloudflare.com) ac
 - **Scraper can't reach hotspot**: The scraper uses `network_mode: host` to access the LAN. Ensure 192.168.1.1 is reachable from the host.
 - **Grafana is not running**: Expected in default mode. Enable with `podman compose -f podman-compose.yml --profile grafana up -d grafana`.
 - **Login fails**: Check credentials in `.env`. The scraper uses Netgear-specific selectors (`#session_password`, `#login_submit`).
-- **No data in Grafana**: Check scraper logs with `podman compose -f podman-compose.yml logs scraper`. Verify Prometheus targets at `http://localhost:9090/targets`.
+- **No data in Grafana**: Check scraper logs with `podman compose -f podman-compose.yml logs scraper`. Ensure observability services are running (`--profile grafana`) and verify Prometheus targets at `http://localhost:9090/targets`.
 - **All metrics showing `n/a` while hotspot is offline**: Expected behavior. Check `hotspot_source_state_code` (`2` = unavailable/offline, `4` = scrape error) and `hotspot_source_empty_streak`; the scraper now uses bounded restart/backoff instead of constant browser churn.
-- **Need a quick runtime diagnosis**: Run `powershell -ExecutionPolicy Bypass -File .\scripts\sanity-check.ps1` to verify machine state, containers, dashboard endpoint, heartbeat, and SSE stream.
+- **Need a quick runtime diagnosis**: Run `powershell -ExecutionPolicy Bypass -File .\scripts\sanity-check.ps1` to verify machine state, required containers, dashboard endpoint, scraper snapshot/history, and SSE stream.
 - **Tunnel URL not working**: The URL changes on restart. Check the current one: `podman logs hotspot-tunnel 2>&1 | grep trycloudflare.com`.
 - **Podman ports only on localhost (Windows/WSL)**: Podman on Windows binds ports to `127.0.0.1` regardless of `0.0.0.0` in compose. Use `netsh interface portproxy` to expose to the LAN:
 
