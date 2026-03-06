@@ -178,11 +178,10 @@ Available at [http://localhost:8080](http://localhost:8080) and via the Cloudfla
 
 - LTE and 5G quality scores with color-coded values
 - Configurable quality time-series chart (default 120s window; canvas-based, no dependencies)
-- Raw LTE/5G signal chart (RSRP/RSRQ/SNR) with fixed dB-scale axis (-120 to +30)
+- Separate LTE and 5G raw signal charts (RSRP/RSRQ/SNR) with fixed dB-scale axis (-120 to +30)
 - Individual RSRP, RSRQ, SNR gauges for both LTE and 5G
 - Source status indicator (OK / No signal / Unavailable / Parse warning / Errors)
-- Last data age indicator (`now - scrape_unixtime`) and stale-data warning
-- Cell data age indicator (`now - last scrape_unixtime where source_state is ok/no_signal`)
+- Stale-data warning when scrape age exceeds 60s
 - Heartbeat age indicator (`now - heartbeat_unixtime`) in the top status bar
 - **Server-Sent Events (SSE)** for near-real-time updates pushed from the scraper (falls back to scraper `/snapshot` polling if SSE is unavailable)
 
@@ -231,6 +230,7 @@ For a persistent URL, create a free [Cloudflare](https://dash.cloudflare.com) ac
 - **No data in Grafana**: Check scraper logs with `podman compose -f podman-compose.yml logs scraper`. Ensure observability services are running (`--profile grafana`) and verify Prometheus targets at `http://localhost:9090/targets`.
 - **All metrics showing `n/a` while hotspot is offline**: Expected behavior. Check `hotspot_source_state_code` (`2` = unavailable/offline, `4` = scrape error) and `hotspot_source_empty_streak`; the scraper now uses bounded restart/backoff instead of constant browser churn.
 - **Need a quick runtime diagnosis**: Run `powershell -ExecutionPolicy Bypass -File .\scripts\sanity-check.ps1` to verify machine state, required containers, dashboard endpoint, scraper snapshot/history, and SSE stream.
+- **Validate dashboard rendering after changes**: Run `python scripts\validate-dashboard.py` (requires `pip install playwright` and `playwright install chromium` on the host). Loads the dashboard in a headless browser and checks for JS console errors, canvas rendering, and expected DOM elements. Run this after any change to `dashboard/index.html`.
 - **Tunnel URL not working**: The URL changes on restart. Check the current one: `podman logs hotspot-tunnel 2>&1 | grep trycloudflare.com`.
 - **Podman ports only on localhost (Windows/WSL)**: Podman on Windows binds ports to `127.0.0.1` regardless of `0.0.0.0` in compose. Use `netsh interface portproxy` to expose to the LAN:
 

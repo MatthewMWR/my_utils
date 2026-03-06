@@ -37,8 +37,6 @@
   <span><span class="label">Band </span><span class="value" id="band">—</span></span>
   <span><span class="label">Service </span><span class="value" id="svc">—</span></span>
   <span><span class="label">Source </span><span class="value" id="source">—</span></span>
-  <span><span class="label">Last scrape attempt age </span><span class="value" id="scrape-age">—</span></span>
-  <span><span class="label">Cell data age </span><span class="value" id="cell-data-age">—</span></span>
   <span><span class="label">Heartbeat age </span><span class="value" id="latency">—</span></span>
 </div>
 
@@ -54,7 +52,8 @@
 </div>
 
 <div class="chart-container"><canvas id="chart"></canvas></div>
-<div class="chart-container"><canvas id="raw-chart"></canvas></div>
+<div class="chart-container"><canvas id="lte-raw-chart"></canvas></div>
+<div class="chart-container"><canvas id="nr-raw-chart"></canvas></div>
 
 <div class="section-label">LTE</div>
 <div class="gauges">
@@ -125,6 +124,7 @@ function renderScrapeAge() {
   var age = Date.now() / 1000 - lastHeartbeat;
   if (age < 0) age = 0;
   var ageEl = document.getElementById('scrape-age');
+  if (!ageEl) return;
   ageEl.textContent = age.toFixed(1) + 's';
   ageEl.className = 'value ' + (age < 3 ? 'good' : age < 12 ? 'warn' : 'bad');
   var staleEl = document.getElementById('stale');
@@ -163,6 +163,7 @@ function isCellDataState(state) {
 
 function renderCellDataAge() {
   var el = document.getElementById('cell-data-age');
+  if (!el) return;
   if (lastCellDataTimestamp == null || isNaN(lastCellDataTimestamp)) {
     el.textContent = '—';
     el.className = 'value na';
@@ -222,8 +223,10 @@ function fetchJson(path) {
 
 var canvas = document.getElementById('chart');
 var ctx = canvas.getContext('2d');
-var rawCanvas = document.getElementById('raw-chart');
-var rawCtx = rawCanvas.getContext('2d');
+var lteRawCanvas = document.getElementById('lte-raw-chart');
+var lteRawCtx = lteRawCanvas.getContext('2d');
+var nrRawCanvas = document.getElementById('nr-raw-chart');
+var nrRawCtx = nrRawCanvas.getContext('2d');
 var lteHistory = [], nrHistory = [], heartbeatHistory = [], scrapeHistory = [];
 var lteRsrpHistory = [], lteRsrqHistory = [], lteSnrHistory = [];
 var nrRsrpHistory = [], nrRsrqHistory = [], nrSnrHistory = [];
@@ -251,11 +254,34 @@ function drawChart() {
     ctx.fillText(v, 4, y + 3);
   }
 
-  if (lteHistory.length === 0 && nrHistory.length === 0 && heartbeatHistory.length === 0 && scrapeHistory.length === 0) return;
-
   var now = Date.now();
   var tMin = now - HISTORY * 1000;
   var tMax = now;
+
+  drawElapsedXLabels(ctx, PAD, W, H, HISTORY);
+
+  ctx.fillStyle = '#5794f2';
+  ctx.fillRect(PAD.left + 8, PAD.top + 4, 12, 3);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('LTE', PAD.left + 24, PAD.top + 10);
+  ctx.fillStyle = '#e36ef2';
+  ctx.fillRect(PAD.left + 52, PAD.top + 4, 12, 3);
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('5G', PAD.left + 68, PAD.top + 10);
+  ctx.fillStyle = '#888';
+  ctx.beginPath();
+  ctx.arc(PAD.left + 97, PAD.top + 5.5, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('HB', PAD.left + 104, PAD.top + 10);
+  ctx.fillStyle = '#f2cc0c';
+  ctx.beginPath();
+  ctx.arc(PAD.left + 129, PAD.top + 5.5, 1.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#aaa';
+  ctx.fillText('SCR', PAD.left + 136, PAD.top + 10);
+
+  if (lteHistory.length === 0 && nrHistory.length === 0 && heartbeatHistory.length === 0 && scrapeHistory.length === 0) return;
 
   function drawLine(data, color) {
     if (data.length < 2) return;
@@ -303,111 +329,115 @@ function drawChart() {
   drawLine(nrHistory, '#e36ef2');
   drawHeartbeatDots(heartbeatHistory);
   drawScrapeDots(scrapeHistory);
-
-  ctx.fillStyle = '#555';
-  ctx.font = '10px sans-serif';
-  for (var i = 0; i <= 6; i++) {
-    var t = new Date(tMin + (i / 6) * (tMax - tMin));
-    var lbl = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
-    var lx = PAD.left + (i / 6) * cw;
-    ctx.fillText(lbl, lx - 15, H - 4);
-  }
-
-  ctx.fillStyle = '#5794f2';
-  ctx.fillRect(PAD.left + 8, PAD.top + 4, 12, 3);
-  ctx.fillStyle = '#aaa';
-  ctx.fillText('LTE', PAD.left + 24, PAD.top + 10);
-  ctx.fillStyle = '#e36ef2';
-  ctx.fillRect(PAD.left + 52, PAD.top + 4, 12, 3);
-  ctx.fillStyle = '#aaa';
-  ctx.fillText('5G', PAD.left + 68, PAD.top + 10);
-  ctx.fillStyle = '#888';
-  ctx.beginPath();
-  ctx.arc(PAD.left + 97, PAD.top + 5.5, 1.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#aaa';
-  ctx.fillText('HB', PAD.left + 104, PAD.top + 10);
-  ctx.fillStyle = '#f2cc0c';
-  ctx.beginPath();
-  ctx.arc(PAD.left + 129, PAD.top + 5.5, 1.5, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#aaa';
-  ctx.fillText('SCR', PAD.left + 136, PAD.top + 10);
 }
 
-function drawRawChart() {
+function drawElapsedXLabels(c, PAD, W, H, historySeconds) {
+  // Pick a nice tick interval based on the time window
+  var nice = [5, 10, 15, 20, 30, 60, 120, 300, 600, 900, 1800, 3600];
+  var targetTicks = 6;
+  var step = historySeconds / targetTicks;
+  var interval = nice[nice.length - 1];
+  for (var n = 0; n < nice.length; n++) {
+    if (nice[n] >= step) { interval = nice[n]; break; }
+  }
+  var cw = W - PAD.left - PAD.right;
+  c.fillStyle = '#555';
+  c.font = '10px sans-serif';
+  for (var sec = 0; sec <= historySeconds; sec += interval) {
+    var x = PAD.left + cw - (sec / historySeconds) * cw;
+    if (x < PAD.left - 5) break;
+    var lbl = sec + 's';
+    if (sec >= 60 && sec % 60 === 0) lbl = (sec / 60) + 'm';
+    c.fillText(lbl, x - 8, H - 4);
+  }
+}
+
+function drawRawPanel(canvasEl, rCtx, seriesList, legendItems) {
   var dpr = window.devicePixelRatio || 1;
-  var rect = rawCanvas.parentElement.getBoundingClientRect();
-  rawCanvas.width = rect.width * dpr;
-  rawCanvas.height = rect.height * dpr;
-  rawCtx.scale(dpr, dpr);
+  var rect = canvasEl.parentElement.getBoundingClientRect();
+  canvasEl.width = rect.width * dpr;
+  canvasEl.height = rect.height * dpr;
+  rCtx.scale(dpr, dpr);
   var W = rect.width, H = rect.height;
-  var PAD = { top: 10, right: 10, bottom: 20, left: 40 };
+  var PAD = { top: 16, right: 10, bottom: 20, left: 40 };
   var cw = W - PAD.left - PAD.right;
   var ch = H - PAD.top - PAD.bottom;
   var YMIN = -120, YMAX = 30;
 
-  rawCtx.clearRect(0, 0, W, H);
+  rCtx.clearRect(0, 0, W, H);
 
-  rawCtx.strokeStyle = '#222';
-  rawCtx.lineWidth = 1;
-  rawCtx.font = '10px sans-serif';
-  rawCtx.fillStyle = '#555';
+  rCtx.strokeStyle = '#222';
+  rCtx.lineWidth = 1;
+  rCtx.font = '10px sans-serif';
+  rCtx.fillStyle = '#555';
   for (var v = YMIN; v <= YMAX; v += 30) {
     var y = PAD.top + ch - ((v - YMIN) / (YMAX - YMIN)) * ch;
-    rawCtx.beginPath(); rawCtx.moveTo(PAD.left, y); rawCtx.lineTo(W - PAD.right, y); rawCtx.stroke();
-    rawCtx.fillText(v, 6, y + 3);
+    rCtx.beginPath(); rCtx.moveTo(PAD.left, y); rCtx.lineTo(W - PAD.right, y); rCtx.stroke();
+    rCtx.fillText(v, 6, y + 3);
   }
 
   var now = Date.now();
   var tMin = now - HISTORY * 1000;
   var tMax = now;
 
-  function drawSeries(data, color) {
-    if (data.length < 2) return;
-    rawCtx.strokeStyle = color;
-    rawCtx.lineWidth = 1.5;
-    rawCtx.beginPath();
+  for (var s = 0; s < seriesList.length; s++) {
+    var data = seriesList[s].data;
+    var color = seriesList[s].color;
+    if (data.length < 2) continue;
+    rCtx.strokeStyle = color;
+    rCtx.lineWidth = 1.5;
+    rCtx.beginPath();
     var started = false;
     for (var i = 0; i < data.length; i++) {
       var x = PAD.left + ((data[i].t - tMin) / (tMax - tMin)) * cw;
       var yv = Math.max(YMIN, Math.min(YMAX, data[i].v));
       var py = PAD.top + ch - ((yv - YMIN) / (YMAX - YMIN)) * ch;
-      if (!started) { rawCtx.moveTo(x, py); started = true; }
-      else rawCtx.lineTo(x, py);
+      if (!started) { rCtx.moveTo(x, py); started = true; }
+      else rCtx.lineTo(x, py);
     }
-    rawCtx.stroke();
+    rCtx.stroke();
   }
 
-  drawSeries(lteRsrpHistory, '#5794f2');
-  drawSeries(lteRsrqHistory, '#8ab8ff');
-  drawSeries(lteSnrHistory, '#33a2ff');
-  drawSeries(nrRsrpHistory, '#e36ef2');
-  drawSeries(nrRsrqHistory, '#f4a1ff');
-  drawSeries(nrSnrHistory, '#ff7adf');
+  drawElapsedXLabels(rCtx, PAD, W, H, HISTORY);
 
-  rawCtx.fillStyle = '#555';
-  rawCtx.font = '10px sans-serif';
-  for (var i = 0; i <= 6; i++) {
-    var t = new Date(tMin + (i / 6) * (tMax - tMin));
-    var lbl = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2);
-    var lx = PAD.left + (i / 6) * cw;
-    rawCtx.fillText(lbl, lx - 15, H - 4);
+  var lx = PAD.left + 8;
+  for (var j = 0; j < legendItems.length; j++) {
+    rCtx.fillStyle = legendItems[j].color;
+    rCtx.fillRect(lx, PAD.top - 9, 8, 2);
+    rCtx.fillStyle = '#aaa';
+    rCtx.fillText(legendItems[j].label, lx + 12, PAD.top - 2);
+    lx += 64;
   }
+}
 
-  function legendDot(x, color, label) {
-    rawCtx.fillStyle = color;
-    rawCtx.fillRect(x, PAD.top + 3, 8, 2);
-    rawCtx.fillStyle = '#aaa';
-    rawCtx.fillText(label, x + 12, PAD.top + 10);
-  }
+function drawLteRawChart() {
+  drawRawPanel(lteRawCanvas, lteRawCtx,
+    [
+      { data: lteRsrpHistory, color: '#5794f2' },
+      { data: lteRsrqHistory, color: '#8ab8ff' },
+      { data: lteSnrHistory,  color: '#33a2ff' }
+    ],
+    [
+      { color: '#5794f2', label: 'RSRP' },
+      { color: '#8ab8ff', label: 'RSRQ' },
+      { color: '#33a2ff', label: 'SNR' }
+    ]
+  );
+}
 
-  legendDot(PAD.left + 8, '#5794f2', 'L-RSRP');
-  legendDot(PAD.left + 72, '#8ab8ff', 'L-RSRQ');
-  legendDot(PAD.left + 136, '#33a2ff', 'L-SNR');
-  legendDot(PAD.left + 190, '#e36ef2', 'N-RSRP');
-  legendDot(PAD.left + 254, '#f4a1ff', 'N-RSRQ');
-  legendDot(PAD.left + 318, '#ff7adf', 'N-SNR');
+function drawNrRawChart() {
+  drawRawPanel(nrRawCanvas, nrRawCtx,
+    [
+      { data: nrRsrpHistory, color: '#e36ef2' },
+      { data: nrRsrqHistory, color: '#f4a1ff' },
+      { data: nrSnrHistory,  color: '#ff7adf' }
+    ],
+    [
+      { color: '#e36ef2', label: 'RSRP' },
+      { color: '#f4a1ff', label: 'RSRQ' },
+      { color: '#ff7adf', label: 'SNR' }
+    ]
+  );
 }
 
 function applyLiveData(d) {
@@ -467,7 +497,8 @@ function applyLiveData(d) {
     nrRsrqHistory = nrRsrqHistory.filter(function(p) { return p.t >= cutoff; });
     nrSnrHistory = nrSnrHistory.filter(function(p) { return p.t >= cutoff; });
     drawChart();
-    drawRawChart();
+    drawLteRawChart();
+    drawNrRawChart();
   }
 }
 
@@ -542,12 +573,14 @@ function refreshHistory() {
     }
     renderCellDataAge();
     drawChart();
-    drawRawChart();
+    drawLteRawChart();
+    drawNrRawChart();
   })
   .catch(function() {});
 }
 
-// Boot: load history from scraper, start SSE, fall back to snapshot polling
+// Boot: draw empty charts immediately, then load data
+drawChart(); drawLteRawChart(); drawNrRawChart();
 refreshSnapshot().finally(function() { refreshHistory(); });
 connectSSE();
 // Polling fallback when SSE is disconnected
@@ -556,7 +589,7 @@ setInterval(function() { if (!sseConnected) refreshHistory(); }, HISTORY_POLL);
 setInterval(renderScrapeAge, 1000);
 setInterval(renderCellDataAge, 1000);
 setInterval(renderLatency, 1000);
-window.addEventListener('resize', function() { drawChart(); drawRawChart(); });
+window.addEventListener('resize', function() { drawChart(); drawLteRawChart(); drawNrRawChart(); });
 </script>
 </body>
 </html>

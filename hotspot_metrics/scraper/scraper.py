@@ -558,56 +558,39 @@ class HotspotScraper:
         self._browser = None
         self._page = None
         self._diag_target = f"{HOTSPOT_URL}/index.html#{DIAG_HASH}"
-        self._model_events: queue.Queue = queue.Queue(maxsize=32)
-        self._last_model_event = 0.0
 
     def start(self):
         self._pw = sync_playwright().start()
         try:
             self._browser = self._pw.chromium.launch(headless=True)
             self._page = self._browser.new_page()
-            self._page.on("response", self._on_response)
             self._login()
             self._navigate_to_diagnostics(force_reload=False)
         except Exception:
             self.stop()
             raise
 
-    def _on_response(self, response):
-        if "/api/model.json" not in response.url:
-            return
+    def wait_for_model_event(self, timeout: float):
+        """Block until the SPA fetches model.json, keeping Playwright's
+        event loop alive so we actually see the request.  Returns
+        (data, state, message, event_time) or None on timeout."""
+        try:
+            with self._page.expect_response(
+                lambda r: "/api/model.json" in r.url,
+                timeout=timeout * 1000,
+            ) as response_info:
+                pass
+            response = response_info.value
+        except PwTimeout:
+            return None
+
         try:
             model = response.json()
         except Exception:
-            return
-
-        data, state, message = parse_model_payload(model)
-        event_time = time.time()
-        self._last_model_event = event_time
-
-        while self._model_events.qsize() >= 4:
-            try:
-                self._model_events.get_nowait()
-            except queue.Empty:
-                break
-        try:
-            self._model_events.put_nowait((data, state, message, event_time))
-        except queue.Full:
-            pass
-
-    def get_latest_model_event(self, timeout: float):
-        try:
-            event = self._model_events.get(timeout=timeout)
-        except queue.Empty:
             return None
 
-        # Collapse burst events to the freshest sample.
-        while True:
-            try:
-                event = self._model_events.get_nowait()
-            except queue.Empty:
-                break
-        return event
+        data, state, message = parse_model_payload(model)
+        return data, state, message, time.time()
 
     def _login(self):
         log.info("Logging in to %s …", HOTSPOT_URL)
@@ -714,7 +697,7 @@ def run():
                     time.sleep(backoff_seconds)
                     continue
 
-            event = scraper.get_latest_model_event(timeout=SCRAPE_INTERVAL)
+            event = scraper.wait_for_model_event(timeout=SCRAPE_INTERVAL)
             if event is not None:
                 data, state, message, _event_time = event
             else:
