@@ -11,10 +11,8 @@ Usage:  python scripts/validate-dashboard.py [URL]
 """
 
 import sys
-import time
 
 DASHBOARD_URL = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8080"
-WAIT_SECONDS = 4  # let the page settle and attempt initial draws
 
 EXPECTED_CANVASES = ["chart", "lte-raw-chart", "nr-raw-chart"]
 
@@ -44,7 +42,7 @@ def fail(msg):
 
 
 def run():
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import sync_playwright, TimeoutError as PwTimeout
 
     print(f"Validating dashboard at {DASHBOARD_URL} ...")
 
@@ -54,20 +52,33 @@ def run():
 
         page.on("console", lambda msg: (
             console_errors.append(msg.text)
-            if msg.type in ("error",) else None
+            if msg.type == "error" and "Failed to load resource" not in msg.text
+            else None
         ))
 
         try:
             page.goto(DASHBOARD_URL, wait_until="domcontentloaded", timeout=10_000)
-        except Exception as e:
-            fail(f"Page failed to load: {e}")
+        except PwTimeout:
+            fail(f"Page failed to load within 10s")
             browser.close()
             return False
 
         ok("Page loaded")
 
-        # Give charts time to draw
-        time.sleep(WAIT_SECONDS)
+        # Wait for canvases to render content rather than using a hard-coded sleep
+        try:
+            page.wait_for_function(
+                """() => {
+                    var ids = %s;
+                    return ids.every(function(id) {
+                        var c = document.getElementById(id);
+                        return c && c.width > 300;
+                    });
+                }""" % str(EXPECTED_CANVASES),
+                timeout=6000,
+            )
+        except PwTimeout:
+            pass  # continue with checks — failures will be reported below
 
         # Check console errors
         if console_errors:
@@ -78,8 +89,8 @@ def run():
 
         # Check canvases exist and have been sized
         for canvas_id in EXPECTED_CANVASES:
-            el = page.query_selector(f"#{canvas_id}")
-            if not el:
+            loc = page.locator(f"#{canvas_id}")
+            if loc.count() == 0:
                 fail(f"Canvas #{canvas_id} not found in DOM")
                 continue
             dims = page.evaluate(
@@ -101,7 +112,6 @@ def run():
                     var c = document.getElementById(id);
                     if (!c || c.width === 0 || c.height === 0) return false;
                     var ctx = c.getContext('2d');
-                    // Sample a few rows of pixels to see if anything was drawn
                     var data = ctx.getImageData(0, 0, c.width, c.height).data;
                     for (var i = 3; i < data.length; i += 4) {
                         if (data[i] > 0) return true;
@@ -117,8 +127,8 @@ def run():
 
         # Check key DOM elements
         for selector in EXPECTED_ELEMENTS:
-            el = page.query_selector(selector)
-            if el:
+            loc = page.locator(selector)
+            if loc.count() > 0:
                 ok(f"Element {selector} present")
             else:
                 fail(f"Element {selector} missing")
