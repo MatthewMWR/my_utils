@@ -10,6 +10,7 @@ image="MicrosoftWindowsServer:WindowsServer:2025-datacenter-azure-edition:latest
 machineAdminUserName="azureuser"
 rgPrefix="demo_rg_"
 vmPrefix="demo-vm-"
+size="Standard_D4s_v5"
 
 # ---- Random 4-digit suffix ----
 # Bash $RANDOM returns 0–32767; scale it into [1000..9999]. 【1-813441】【2-c180c4】
@@ -27,7 +28,8 @@ az vm create \
   --name "$vm" \
   --image "$image" \
   --admin-username "$machineAdminUserName" \
-  --public-ip-sku Standard
+  --public-ip-sku Standard \
+  --size "$size"
 
 # ---- Open inbound SSH (TCP 22) via NSG rule ----
 # az vm open-port supports specifying the port (or range) and uses NSG rule priority mechanics. 【3-6d4bd1】
